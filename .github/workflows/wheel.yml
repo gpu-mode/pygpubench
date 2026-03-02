@@ -58,6 +58,33 @@ jobs:
           name: wheel-${{ matrix.wheel_tag }}
           path: wheelhouse/pygpubench*.whl
 
+  gpu-test:
+    name: GPU tests (Modal L4)
+    needs: wheel
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Install Modal
+        run: pip install modal
+
+      - name: Run GPU tests
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: modal run ci/modal_gpu_test.py --wheel dist/pygpubench*.whl --test-dir test
+
   release:
     name: Publish to GitHub Releases
     needs: wheel

@@ -1,58 +1,45 @@
 """Run pygpubench GPU tests on a Modal L4 GPU.
 
-Usage: modal run ci/modal_gpu_test.py
+Usage: modal run ci/modal_gpu_test.py <wheel_path> <test_dir>
 """
 
 import modal
 from pathlib import Path
-
-_repo = Path(__file__).resolve().parent.parent
 
 image = (
     modal.Image.from_registry(
         "nvidia/cuda:13.0.1-cudnn-devel-ubuntu24.04", add_python="3.12"
     )
     .entrypoint([])
-    .apt_install("git", "g++-13", "cmake", "ninja-build")
     .uv_pip_install("torch", index_url="https://download.pytorch.org/whl/cu130")
-    .env({
-        "CUDAARCHS": "80;90",
-        "CC": "gcc-13",
-        "CXX": "g++-13",
-        "CMAKE_GENERATOR": "Ninja",
-    })
-    .add_local_dir(str(_repo / "csrc"), remote_path="/root/pygpubench/csrc")
-    .add_local_dir(str(_repo / "python"), remote_path="/root/pygpubench/python")
-    .add_local_dir(str(_repo / "test"), remote_path="/root/pygpubench/test")
-    .add_local_file(str(_repo / "pyproject.toml"), remote_path="/root/pygpubench/pyproject.toml")
-    .add_local_file(str(_repo / "CMakeLists.txt"), remote_path="/root/pygpubench/CMakeLists.txt")
-    .add_local_file(str(_repo / "README.md"), remote_path="/root/pygpubench/README.md")
 )
 
 app = modal.App("pygpubench-ci", image=image)
 
 
 @app.function(gpu="L4", timeout=600)
-def run_tests():
+def run_tests(whl_bytes: bytes, whl_name: str, test_files: dict[str, bytes]):
     import subprocess
-    import shutil
-    import glob
     import sys
     import os
 
-    # Mounts are read-only; copy to a writable location for the build
-    shutil.copytree("/root/pygpubench", "/tmp/pygpubench")
-    os.chdir("/tmp/pygpubench")
+    # Write wheel and install it
+    whl_path = f"/tmp/{whl_name}"
+    with open(whl_path, "wb") as f:
+        f.write(whl_bytes)
+    subprocess.run([sys.executable, "-m", "pip", "install", whl_path], check=True)
 
-    subprocess.run(["uv", "build", "--wheel"], check=True)
+    # Write test files
+    test_dir = "/tmp/tests"
+    os.makedirs(test_dir, exist_ok=True)
+    for name, content in test_files.items():
+        with open(os.path.join(test_dir, name), "wb") as f:
+            f.write(content)
 
-    whl = glob.glob("dist/*.whl")[0]
-    subprocess.run([sys.executable, "-m", "pip", "install", whl], check=True)
-
-    # Run all test scripts in test/
-    os.chdir("/tmp/pygpubench/test")
+    # Run all test scripts
+    os.chdir(test_dir)
     failed = []
-    for test_file in sorted(glob.glob("*.py")):
+    for test_file in sorted(test_files):
         if test_file == "submission.py":
             continue
         print(f"\n=== {test_file} ===")
@@ -66,5 +53,17 @@ def run_tests():
 
 
 @app.local_entrypoint()
-def main():
-    run_tests.remote()
+def main(wheel: str, test_dir: str = "test"):
+    import glob
+
+    # Read the wheel
+    whl_path = Path(wheel)
+    whl_bytes = whl_path.read_bytes()
+
+    # Read all test files
+    test_path = Path(test_dir)
+    test_files = {}
+    for f in test_path.glob("*.py"):
+        test_files[f.name] = f.read_bytes()
+
+    run_tests.remote(whl_bytes, whl_path.name, test_files)
