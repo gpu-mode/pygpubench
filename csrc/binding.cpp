@@ -5,6 +5,7 @@
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/string.h>
 
+#include <unistd.h>
 #include <utility>
 #include "manager.h"
 
@@ -15,6 +16,7 @@ void do_bench(std::string target_file, const nb::object& kernel_generator, const
     BenchmarkManager mgr(std::move(target_file), seed, discard, unlink, nvtx);
     auto [args, expected] = mgr.setup_benchmark(nb::cast<nb::callable>(test_generator), test_kwargs, repeats);
     mgr.do_bench_py(nb::cast<nb::callable>(kernel_generator), args, expected, reinterpret_cast<cudaStream_t>(stream));
+    _exit(0);
 }
 
 

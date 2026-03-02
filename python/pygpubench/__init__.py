@@ -1,7 +1,6 @@
 import dataclasses
 import math
 import multiprocessing as mp
-import os
 import tempfile
 import traceback
 
@@ -24,40 +23,6 @@ __all__ = [
     "TestGeneratorInterface",
     "ExpectedResult",
 ]
-
-
-def _do_bench_impl_and_hard_exit(
-        out_file: str,
-        kernel_generator: KernelGeneratorInterface,
-        test_generator: TestGeneratorInterface,
-        test_args: dict,
-        repeats: int,
-        seed: int,
-        discard: bool,
-        nvtx: bool,
-        tb_conn,
-):
-    """
-    Spawn-target helper for isolated benchmarking.
-    Always terminates via os._exit so untrusted atexit handlers cannot run.
-    """
-    try:
-        do_bench_impl(
-            out_file,
-            kernel_generator,
-            test_generator,
-            test_args,
-            repeats,
-            seed,
-            None,
-            discard,
-            True,   # unlink=True
-            nvtx,
-            tb_conn,
-        )
-    except BaseException:
-        os._exit(1)
-    os._exit(0)
 
 
 def do_bench_impl(out_file: str, kernel_generator: KernelGeneratorInterface, test_generator: TestGeneratorInterface,
@@ -181,7 +146,7 @@ def do_bench_isolated(
             ctx = mp.get_context('spawn')
             parent_conn, child_conn = ctx.Pipe(duplex=False)
             process = ctx.Process(
-                target=_do_bench_impl_and_hard_exit,
+                target=do_bench_impl,
                 args=(
                     result_file,
                     kernel_generator,
@@ -189,7 +154,9 @@ def do_bench_isolated(
                     test_args,
                     repeats,
                     seed,
+                    None,
                     discard,
+                    True,   # unlink=True
                     nvtx,
                     child_conn,
                 ),
