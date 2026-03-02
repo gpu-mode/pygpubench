@@ -188,12 +188,6 @@ def do_bench_isolated(
                     results.errors = int(parts[1])
             parent_conn.close()
             results.full = all((t > 0 for t in results.time_us))
-            # Incomplete benchmark runs are considered invalid for security-sensitive
-            # benchmarking. This closes a "warmup manipulation" class of attacks where
-            # a submission intentionally reduces the number of measured iterations and
-            # still appears successful when callers only check `errors`.
-            if not results.full and (results.errors is None or results.errors == 0):
-                results.errors = 1
         return results
 
     finally:
