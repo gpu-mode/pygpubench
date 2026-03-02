@@ -49,10 +49,19 @@ def run_tests():
     whl = glob.glob("dist/*.whl")[0]
     subprocess.run([sys.executable, "-m", "pip", "install", whl], check=True)
 
-    # Run tests
+    # Run all test scripts in test/
     os.chdir("/tmp/pygpubench/test")
-    result = subprocess.run([sys.executable, "grayscale.py"], text=True)
-    if result.returncode != 0:
+    failed = []
+    for test_file in sorted(glob.glob("*.py")):
+        if test_file == "submission.py":
+            continue
+        print(f"\n=== {test_file} ===")
+        result = subprocess.run([sys.executable, test_file], text=True)
+        if result.returncode != 0:
+            failed.append(test_file)
+
+    if failed:
+        print(f"\nFailed: {', '.join(failed)}")
         raise SystemExit(1)
 
 
