@@ -17,7 +17,7 @@
 
 void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
 
-void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
+static void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
                                        const nb_cuda_array& received, float r_tol, float a_tol, unsigned seed, std::size_t n_bytes, cudaStream_t stream) {
     nb::dlpack::dtype bf16_dt{static_cast<std::uint8_t>(nb::dlpack::dtype_code::Bfloat), 16, 1};
     nb::dlpack::dtype fp16_dt{static_cast<std::uint8_t>(nb::dlpack::dtype_code::Float), 16, 1};
@@ -31,6 +31,24 @@ void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb
     } else {
         throw std::runtime_error("Unsupported dtype for check_approx_match");
     }
+}
+
+static nb::callable kernel_from_qualname(const std::string& qualname) {
+    const auto dot = qualname.rfind('.');
+    if (dot == std::string::npos) {
+        throw std::invalid_argument(
+            "qualname must be a fully qualified name (e.g. 'my_module.kernel'), got: " + qualname
+        );
+    }
+    const std::string module_name = qualname.substr(0, dot);
+    const std::string attr = qualname.substr(dot + 1);
+    if (module_name.empty() || attr.empty()) {
+        throw std::invalid_argument(
+            "qualname has empty module or attribute part: " + qualname
+        );
+    }
+    nb::object mod = nb::module_::import_("importlib").attr("import_module")(module_name);
+    return nb::cast<nb::callable>(mod.attr(attr.c_str()));
 }
 
 BenchmarkManager::BenchmarkManager(std::string result_file, std::uint64_t seed, bool discard, bool unlink, bool nvtx) {
@@ -155,7 +173,7 @@ BenchmarkManager::ShadowArgument& BenchmarkManager::ShadowArgument::operator=(Sh
     return *this;
 }
 
-void BenchmarkManager::do_bench_py(const nb::callable& kernel_generator, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream) {
+void BenchmarkManager::do_bench_py(const std::string& kernel_qualname, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream) {
     if (args.size() < 5) {
         throw std::runtime_error("Not enough test cases to run benchmark");
     }
@@ -199,9 +217,6 @@ void BenchmarkManager::do_bench_py(const nb::callable& kernel_generator, const s
         }
     }
 
-    // at this point, we call user code (`kernel_generator` is supposed to be the first place the user file is imported)
-    // after this, we cannot trust python anymore
-
     // Prevent ptrace and /proc/self/mem tampering
     prctl(PR_SET_DUMPABLE, 0);
     // Prevent gaining privileges (if attacker tries setuid exploits)
@@ -212,7 +227,9 @@ void BenchmarkManager::do_bench_py(const nb::callable& kernel_generator, const s
     //             exists at this point. does not seem reliable, so disabled for now
     // prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 0);
 
-    nb::callable kernel = nb::cast<nb::callable>(kernel_generator());
+    // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
+    // after this, we cannot trust python anymore
+    nb::callable kernel = kernel_from_qualname(kernel_qualname);
 
     // ok, first run for compilations etc
     nvtx_push("warmup");

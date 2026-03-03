@@ -19,25 +19,24 @@ __all__ = [
     "BenchmarkStats",
     "DeterministicContext",
     "KernelFunction",
-    "KernelGeneratorInterface",
     "TestGeneratorInterface",
     "ExpectedResult",
 ]
 
 
-def do_bench_impl(out_file: str, kernel_generator: KernelGeneratorInterface, test_generator: TestGeneratorInterface,
+def do_bench_impl(out_file: str, qualname: str, test_generator: TestGeneratorInterface,
                   test_args: dict, repeats: int, seed: int, stream: int = None, discard: bool = True,
                   unlink: bool = False, nvtx: bool = False, tb_conn=None):
     """
-    Benchmarks the kernel returned by `kernel_generator` against the test case returned by `test_generator`.
+    Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
     :param out_file: File in which to write the benchmark results.
-    :param kernel_generator: A function that takes no arguments and returns a kernel function.
+    :param qualname: Fully qualified name of the kernel object, e.g. ``my_package.my_module.kernel``.
     :param test_generator: A function that takes the test arguments (including a seed) and returns a test case; i.e., a tuple of (input, expected)
     :param test_args: keyword arguments to be passed to `test_generator`. Seed will be generated automatically.
     :param repeats: Number of times to repeat the benchmark. `test_generator` will be called `repeats` times.
     :param stream: Cuda stream on which to run the benchmark. If not given, torch's current stream is selected
     :param discard: If true, then cache lines are discarded as part of cache clearing before each benchmark run.
-    :param unlink: Whether to unlink the output file before calling `kernel_generator`. Unlinking makes it impossible to
+    :param unlink: Whether to unlink the output file before importing the kernel. Unlinking makes it impossible to
     open the file again, protecting it against malicious kernels.
     :param nvtx: Whether to enable NVTX markers for the benchmark. Mostly useful for debugging.
     :param tb_conn: A connection to a multiprocessing pipe for sending tracebacks to the parent process.
@@ -51,7 +50,7 @@ def do_bench_impl(out_file: str, kernel_generator: KernelGeneratorInterface, tes
         with DeterministicContext():
             _pygpubench.do_bench(
                 out_file,
-                kernel_generator,
+                qualname,
                 test_generator,
                 test_args,
                 repeats,
@@ -121,7 +120,7 @@ def basic_stats(time_us: list[float]) -> BenchmarkStats:
 
 
 def do_bench_isolated(
-        kernel_generator: KernelGeneratorInterface,
+        qualname: str,
         test_generator: TestGeneratorInterface,
         test_args: dict,
         repeats: int,
@@ -149,7 +148,7 @@ def do_bench_isolated(
                 target=do_bench_impl,
                 args=(
                     result_file,
-                    kernel_generator,
+                    qualname,
                     test_generator,
                     test_args,
                     repeats,

@@ -22,7 +22,7 @@ public:
     BenchmarkManager(std::string result_file, std::uint64_t seed, bool discard, bool unlink, bool nvtx);
     ~BenchmarkManager();
     std::pair<std::vector<nb::tuple>, std::vector<nb::tuple>> setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats);
-    void do_bench_py(const nb::callable& kernel_generator, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
+    void do_bench_py(const std::string& kernel_qualname, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
 private:
     struct Expected {
         enum EMode {

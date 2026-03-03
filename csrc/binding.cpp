@@ -11,10 +11,10 @@
 namespace nb = nanobind;
 
 
-void do_bench(std::string target_file, const nb::object& kernel_generator, const nb::object& test_generator, const nb::dict& test_kwargs, int repeats, std::uint64_t seed, std::uintptr_t stream, bool discard, bool unlink, bool nvtx) {
+void do_bench(std::string target_file, const std::string& kernel_qualname, const nb::object& test_generator, const nb::dict& test_kwargs, int repeats, std::uint64_t seed, std::uintptr_t stream, bool discard, bool unlink, bool nvtx) {
     BenchmarkManager mgr(std::move(target_file), seed, discard, unlink, nvtx);
     auto [args, expected] = mgr.setup_benchmark(nb::cast<nb::callable>(test_generator), test_kwargs, repeats);
-    mgr.do_bench_py(nb::cast<nb::callable>(kernel_generator), args, expected, reinterpret_cast<cudaStream_t>(stream));
+    mgr.do_bench_py(kernel_qualname, args, expected, reinterpret_cast<cudaStream_t>(stream));
 }
 
 
