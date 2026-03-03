@@ -52,7 +52,7 @@ static nb::callable kernel_from_qualname(const std::string& qualname) {
     return nb::cast<nb::callable>(mod.attr(attr.c_str()));
 }
 
-BenchmarkManager::BenchmarkManager(int result_fd, std::uint64_t seed, bool discard, bool nvtx) {
+BenchmarkManager::BenchmarkManager(int result_fd, int signature_fd, std::uint64_t seed, bool discard, bool nvtx) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
@@ -63,6 +63,11 @@ BenchmarkManager::BenchmarkManager(int result_fd, std::uint64_t seed, bool disca
     mNVTXEnabled = nvtx;
     mDiscardCache = discard;
     mSeed = seed;
+    char sig_buf[256];
+    FILE* sig_file = fdopen(signature_fd, "r");
+    fgets(sig_buf, sizeof(sig_buf), sig_file);
+    fclose(sig_file);
+    mSignature = std::string(sig_buf);
 }
 
 BenchmarkManager::~BenchmarkManager() {
@@ -371,6 +376,7 @@ void BenchmarkManager::do_bench_py(const std::string& kernel_qualname, const std
         CUDA_CHECK(cudaEventElapsedTime(&duration, mStartEvents.at(i), mEndEvents.at(i)));
         fprintf(mOutputFile, "%d\t%f\n", test_order.at(i) - 1, duration * 1000);
     }
+    fprintf(mOutputFile, "signature\t%s", mSignature.c_str());
     fflush(mOutputFile);
 
     // cleanup events

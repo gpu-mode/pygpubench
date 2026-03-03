@@ -19,7 +19,7 @@ using nb_cuda_array = nb::ndarray<nb::c_contig, nb::device::cuda>;
 
 class BenchmarkManager {
 public:
-    BenchmarkManager(int result_fd, std::uint64_t seed, bool discard, bool nvtx);
+    BenchmarkManager(int result_fd, int signature_fd, std::uint64_t seed, bool discard, bool nvtx);
     ~BenchmarkManager();
     std::pair<std::vector<nb::tuple>, std::vector<nb::tuple>> setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats);
     void do_bench_py(const std::string& kernel_qualname, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
@@ -67,6 +67,7 @@ private:
     std::vector<Expected> mExpectedOutputs;
 
     FILE* mOutputFile;
+    std::string mSignature;
 
     static ShadowArgumentList make_shadow_args(const nb::tuple& args, cudaStream_t stream);
 

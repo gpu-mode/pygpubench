@@ -4,6 +4,7 @@ import multiprocessing
 import multiprocessing as mp
 import os
 import traceback
+import secrets
 
 from typing import Optional
 
@@ -24,12 +25,13 @@ __all__ = [
 ]
 
 
-def do_bench_impl(out_fd: "multiprocessing.Pipe", qualname: str, test_generator: TestGeneratorInterface,
+def do_bench_impl(out_fd: "multiprocessing.Pipe", signature: "multiprocessing.Pipe", qualname: str, test_generator: TestGeneratorInterface,
                   test_args: dict, repeats: int, seed: int, stream: int = None, discard: bool = True,
-                  nvtx: bool = False, tb_conn=None):
+                  nvtx: bool = False, tb_conn: "multiprocessing.Pipe" = None):
     """
     Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
     :param out_fd: Writable file descriptor to which benchmark results are written.
+    :param signature: Authentication token read by the C++ layer before untrusted code runs.
     :param qualname: Fully qualified name of the kernel object, e.g. ``my_package.my_module.kernel``.
     :param test_generator: A function that takes the test arguments (including a seed) and returns a test case; i.e., a tuple of (input, expected)
     :param test_args: keyword arguments to be passed to `test_generator`. Seed will be generated automatically.
@@ -48,6 +50,7 @@ def do_bench_impl(out_fd: "multiprocessing.Pipe", qualname: str, test_generator:
         with DeterministicContext():
             _pygpubench.do_bench(
                 out_fd.fileno(),
+                signature.fileno(),
                 qualname,
                 test_generator,
                 test_args,
@@ -141,6 +144,11 @@ def do_bench_isolated(
     read_fd = result_parent.fileno()
     write_fd = result_child.fileno()
 
+    sig_r, sig_w = ctx.Pipe(duplex=False)
+    signature = secrets.token_hex(16)
+    os.write(sig_w.fileno(), signature.encode())
+    sig_w.close()
+
     try:
         import fcntl
         # F_SETPIPE_SZ is Linux-specific (1032); fall back silently on other OSes.
@@ -159,6 +167,7 @@ def do_bench_isolated(
         target=do_bench_impl,
         args=(
             result_child,
+            sig_r,
             qualname,
             test_generator,
             test_args,
@@ -204,6 +213,7 @@ def do_bench_isolated(
     parent_tb_conn.close()
 
     results = BenchmarkResult(None, [-1] * repeats, None, False)
+    has_signature = False
     for line in raw.decode().splitlines():
         parts = line.strip().split('\t')
         if len(parts) == 2 and parts[0].isdigit():
@@ -214,5 +224,12 @@ def do_bench_isolated(
             results.event_overhead_us = float(parts[1].split()[0])
         elif parts[0] == "error-count":
             results.errors = int(parts[1])
+        elif parts[0] == "signature":
+            if signature != parts[1]:
+                raise AssertionError(f"Invalid signature")
+            has_signature = True
+    if not has_signature:
+        raise RuntimeError(f"No signature found in output")
+
     results.full = all((t > 0 for t in results.time_us))
     return results
