@@ -52,22 +52,21 @@ static nb::callable kernel_from_qualname(const std::string& qualname) {
     return nb::cast<nb::callable>(mod.attr(attr.c_str()));
 }
 
-BenchmarkManager::BenchmarkManager(std::string result_file, std::uint64_t seed, bool discard, bool unlink, bool nvtx) {
+BenchmarkManager::BenchmarkManager(int result_fd, std::uint64_t seed, bool discard, bool nvtx) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
     CUDA_CHECK(cudaMalloc(&mDeviceDummyMemory, 2 * mL2CacheSize));
     // allocate a large arena (2MiB) to place the error counter in
     CUDA_CHECK(cudaMalloc(&mDeviceErrorBase, ArenaSize));
-    mOutputFile.open(result_file);
+    mOutputFile = fdopen(result_fd, "w");
     mNVTXEnabled = nvtx;
     mDiscardCache = discard;
     mSeed = seed;
-    if (unlink)
-        std::remove(result_file.c_str());
 }
 
 BenchmarkManager::~BenchmarkManager() {
+    fclose(mOutputFile);
     cudaFree(mDeviceDummyMemory);
     cudaFree(mDeviceErrorBase);
     for (auto& event : mStartEvents) cudaEventDestroy(event);
@@ -311,7 +310,7 @@ void BenchmarkManager::do_bench_py(const std::string& kernel_qualname, const std
     }
     std::sort(empty_event_times.begin(), empty_event_times.end());
     float median = empty_event_times.at(empty_event_times.size() / 2);
-    mOutputFile << "event-overhead\t" << median * 1000 << " µs\n";
+    fprintf(mOutputFile, "event-overhead\t%f µs\n", median * 1000);
 
     // create a randomized order for running the tests
     std::vector<int> test_order(actual_calls);
@@ -362,17 +361,17 @@ void BenchmarkManager::do_bench_py(const std::string& kernel_qualname, const std
     CUDA_CHECK(cudaMemcpy(&error_count, mDeviceErrorCounter, sizeof(unsigned), cudaMemcpyDeviceToHost));
     // subtract the nuisance shift that we applied to the counter
     error_count -= mErrorCountShift;
+
     if (error_count > 0) {
-        mOutputFile << "error-count\t" << error_count << "\n";
+        fprintf(mOutputFile, "error-count\t%u\n", error_count);
     }
 
-    // extract run times and write to output file
     for (int i = 0; i < actual_calls; i++) {
         float duration;
         CUDA_CHECK(cudaEventElapsedTime(&duration, mStartEvents.at(i), mEndEvents.at(i)));
-        mOutputFile << test_order.at(i) - 1 << "\t" << (duration * 1000) << "\n";
+        fprintf(mOutputFile, "%d\t%f\n", test_order.at(i) - 1, duration * 1000);
     }
-    mOutputFile.flush();
+    fflush(mOutputFile);
 
     // cleanup events
     for (auto& event : mStartEvents) CUDA_CHECK(cudaEventDestroy(event));

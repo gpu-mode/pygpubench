@@ -1,10 +1,10 @@
 import dataclasses
 import math
+import multiprocessing
 import multiprocessing as mp
-import tempfile
+import os
 import traceback
 
-from pathlib import Path
 from typing import Optional
 
 from . import _pygpubench
@@ -24,20 +24,18 @@ __all__ = [
 ]
 
 
-def do_bench_impl(out_file: str, qualname: str, test_generator: TestGeneratorInterface,
+def do_bench_impl(out_fd: "multiprocessing.Pipe", qualname: str, test_generator: TestGeneratorInterface,
                   test_args: dict, repeats: int, seed: int, stream: int = None, discard: bool = True,
-                  unlink: bool = False, nvtx: bool = False, tb_conn=None):
+                  nvtx: bool = False, tb_conn=None):
     """
     Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
-    :param out_file: File in which to write the benchmark results.
+    :param out_fd: Writable file descriptor to which benchmark results are written.
     :param qualname: Fully qualified name of the kernel object, e.g. ``my_package.my_module.kernel``.
     :param test_generator: A function that takes the test arguments (including a seed) and returns a test case; i.e., a tuple of (input, expected)
     :param test_args: keyword arguments to be passed to `test_generator`. Seed will be generated automatically.
     :param repeats: Number of times to repeat the benchmark. `test_generator` will be called `repeats` times.
-    :param stream: Cuda stream on which to run the benchmark. If not given, torch's current stream is selected
+    :param stream: Cuda stream on which to run the benchmark. If not given, torch's current stream is selected.
     :param discard: If true, then cache lines are discarded as part of cache clearing before each benchmark run.
-    :param unlink: Whether to unlink the output file before importing the kernel. Unlinking makes it impossible to
-    open the file again, protecting it against malicious kernels.
     :param nvtx: Whether to enable NVTX markers for the benchmark. Mostly useful for debugging.
     :param tb_conn: A connection to a multiprocessing pipe for sending tracebacks to the parent process.
     """
@@ -49,7 +47,7 @@ def do_bench_impl(out_file: str, qualname: str, test_generator: TestGeneratorInt
     try:
         with DeterministicContext():
             _pygpubench.do_bench(
-                out_file,
+                out_fd.fileno(),
                 qualname,
                 test_generator,
                 test_args,
@@ -57,7 +55,6 @@ def do_bench_impl(out_file: str, qualname: str, test_generator: TestGeneratorInt
                 seed,
                 stream,
                 discard,
-                unlink,
                 nvtx,
             )
     except BaseException:
@@ -127,67 +124,95 @@ def do_bench_isolated(
         seed: int,
         *,
         discard: bool = True,
-        nvtx: bool = False
+        nvtx: bool = False,
+        timeout: int = 300,
 ) -> BenchmarkResult:
     """
     Runs kernel benchmark (`do_bench_impl`) in a subprocess for proper isolation.
     """
     assert repeats > 1
 
-    # Create a named temporary file for the C++ extension to store the results in
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.tsv') as f:
-        result_file = f.name
+    _PIPE_CAPACITY = 1 * 1024 * 1024  # 1 MB; anything more indicates a broken script
+
+    ctx = mp.get_context('spawn')
+
+    # Create a pipe: parent reads from read_fd, subprocess writes to write_fd.
+    result_parent, result_child = ctx.Pipe(duplex=False)
+    read_fd = result_parent.fileno()
+    write_fd = result_child.fileno()
 
     try:
-        # open file before running subprocess; process will unlink
-        with open(result_file, 'r') as f:
-            # Spawn testing process
-            ctx = mp.get_context('spawn')
-            parent_conn, child_conn = ctx.Pipe(duplex=False)
-            process = ctx.Process(
-                target=do_bench_impl,
-                args=(
-                    result_file,
-                    qualname,
-                    test_generator,
-                    test_args,
-                    repeats,
-                    seed,
-                    None,
-                    discard,
-                    True,   # unlink=True
-                    nvtx,
-                    child_conn,
-                ),
-            )
+        import fcntl
+        # F_SETPIPE_SZ is Linux-specific (1032); fall back silently on other OSes.
+        F_SETPIPE_SZ = 1032
+        fcntl.fcntl(write_fd, F_SETPIPE_SZ, _PIPE_CAPACITY)
+    except (AttributeError, OSError):
+        pass
 
-            process.start()
-            child_conn.close()
-            process.join()
+    parent_tb_conn, child_tb_conn = ctx.Pipe(duplex=False)
 
-            if process.exitcode != 0:
-                diagnostic = parent_conn.recv() if parent_conn.poll() else None
-                parent_conn.close()
-                msg = f"Benchmark subprocess failed with exit code {process.exitcode}"
-                if diagnostic:
-                    msg += "\n" + diagnostic
-                raise RuntimeError(msg)
+    # Make write_fd inheritable before creating the Process so the spawned
+    # child receives it as a live, open fd.
+    os.set_inheritable(write_fd, True)
 
-            # Read results from file
-            results = BenchmarkResult(None, [-1] * repeats, None, False)
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) == 2 and parts[0].isdigit():
-                    iteration = int(parts[0])
-                    time_us = float(parts[1])
-                    results.time_us[iteration] = time_us
-                elif parts[0] == "event-overhead":
-                    results.event_overhead_us = float(parts[1].split()[0])
-                elif parts[0] == "error-count":
-                    results.errors = int(parts[1])
-            parent_conn.close()
-            results.full = all((t > 0 for t in results.time_us))
-        return results
+    process = ctx.Process(
+        target=do_bench_impl,
+        args=(
+            result_child,
+            qualname,
+            test_generator,
+            test_args,
+            repeats,
+            seed,
+            None,
+            discard,
+            nvtx,
+            child_tb_conn,
+        ),
+    )
 
-    finally:
-        Path(result_file).unlink(missing_ok=True)
+    process.start()
+    child_tb_conn.close()
+    result_child.close()
+
+    process.join(timeout=timeout)
+
+    if process.is_alive():
+        process.kill()
+        process.join()
+        result_parent.close()
+        raise RuntimeError(
+            f"Benchmark subprocess timed out after {timeout}s -- "
+            "possible deadlock or infinite loop in kernel"
+        )
+
+    if process.exitcode != 0:
+        try:
+            diagnostic = parent_tb_conn.recv() if parent_tb_conn.poll() else None
+        except EOFError:
+            diagnostic = None
+        parent_tb_conn.close()
+        result_parent.close()
+        msg = f"Benchmark subprocess failed with exit code {process.exitcode}"
+        if diagnostic:
+            msg += "\n" + diagnostic
+        raise RuntimeError(msg)
+
+    # Child has exited and closed its write-end, so this read is bounded.
+    raw = os.read(read_fd, _PIPE_CAPACITY)
+    result_parent.close()
+    parent_tb_conn.close()
+
+    results = BenchmarkResult(None, [-1] * repeats, None, False)
+    for line in raw.decode().splitlines():
+        parts = line.strip().split('\t')
+        if len(parts) == 2 and parts[0].isdigit():
+            iteration = int(parts[0])
+            time_us = float(parts[1])
+            results.time_us[iteration] = time_us
+        elif parts[0] == "event-overhead":
+            results.event_overhead_us = float(parts[1].split()[0])
+        elif parts[0] == "error-count":
+            results.errors = int(parts[1])
+    results.full = all((t > 0 for t in results.time_us))
+    return results
