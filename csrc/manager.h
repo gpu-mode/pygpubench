@@ -59,6 +59,8 @@ private:
     int* mDeviceDummyMemory = nullptr;
     int mL2CacheSize;
     unsigned* mDeviceErrorCounter = nullptr;
+    unsigned* mDeviceErrorBase = nullptr;
+    unsigned mErrorCountShift = 0;
     bool mNVTXEnabled = false;
     bool mDiscardCache = true;
     std::uint64_t mSeed = -1;

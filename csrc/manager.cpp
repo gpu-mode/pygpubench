@@ -14,6 +14,7 @@
 
 #include <sys/prctl.h>
 
+static constexpr std::size_t ArenaSize = 2 * 1024 * 1024;
 
 void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
 
@@ -38,7 +39,8 @@ BenchmarkManager::BenchmarkManager(std::string result_file, std::uint64_t seed, 
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
     CUDA_CHECK(cudaMalloc(&mDeviceDummyMemory, 2 * mL2CacheSize));
-    CUDA_CHECK(cudaMalloc(&mDeviceErrorCounter, sizeof(unsigned)));
+    // allocate a large arena (2MiB) to place the error counter in
+    CUDA_CHECK(cudaMalloc(&mDeviceErrorBase, ArenaSize));
     mOutputFile.open(result_file);
     mNVTXEnabled = nvtx;
     mDiscardCache = discard;
@@ -49,7 +51,7 @@ BenchmarkManager::BenchmarkManager(std::string result_file, std::uint64_t seed, 
 
 BenchmarkManager::~BenchmarkManager() {
     cudaFree(mDeviceDummyMemory);
-    cudaFree(mDeviceErrorCounter);
+    cudaFree(mDeviceErrorBase);
     for (auto& event : mStartEvents) cudaEventDestroy(event);
     for (auto& event : mEndEvents) cudaEventDestroy(event);
     for (auto& exp: mExpectedOutputs) cudaFree(exp.Value);
@@ -259,7 +261,20 @@ void BenchmarkManager::do_bench_py(const nb::callable& kernel_generator, const s
         CUDA_CHECK(cudaEventCreate(&mEndEvents.at(i)));
     }
 
-    CUDA_CHECK(cudaMemsetAsync(mDeviceErrorCounter, 0, sizeof(unsigned), stream));
+    // pick a random spot for the unsigned
+    // initialize the whole area with random junk; the error counter
+    // will be shifted by the initial value, so just writing zero
+    // won't result in passing the tests.
+    std::random_device rd;
+    std::mt19937 rng(rd());
+    std::uniform_int_distribution<std::ptrdiff_t> dist(0, ArenaSize / sizeof(unsigned) - 1);
+    std::uniform_int_distribution<unsigned> noise_generator(0, std::numeric_limits<unsigned>::max());
+    std::vector<unsigned> noise(ArenaSize / sizeof(unsigned));
+    std::generate(noise.begin(), noise.end(), [&]() -> unsigned { return noise_generator(rng); });
+    CUDA_CHECK(cudaMemcpyAsync(mDeviceErrorBase, noise.data(), noise.size() * sizeof(unsigned), cudaMemcpyHostToDevice,  stream));
+    std::ptrdiff_t offset = dist(rng);
+    mDeviceErrorCounter = mDeviceErrorBase + offset;
+    mErrorCountShift = noise.at(offset);
 
     // dry run -- measure overhead of events
     nvtx_push("dry-run");
@@ -280,9 +295,6 @@ void BenchmarkManager::do_bench_py(const nb::callable& kernel_generator, const s
     std::sort(empty_event_times.begin(), empty_event_times.end());
     float median = empty_event_times.at(empty_event_times.size() / 2);
     mOutputFile << "event-overhead\t" << median * 1000 << " µs\n";
-
-    std::random_device rd;
-    std::mt19937 rng(rd());
 
     // create a randomized order for running the tests
     std::vector<int> test_order(actual_calls);
@@ -329,8 +341,10 @@ void BenchmarkManager::do_bench_py(const nb::callable& kernel_generator, const s
     nvtx_pop();
 
     cudaEventSynchronize(mEndEvents.back());
-    int error_count;
+    unsigned error_count;
     CUDA_CHECK(cudaMemcpy(&error_count, mDeviceErrorCounter, sizeof(unsigned), cudaMemcpyDeviceToHost));
+    // subtract the nuisance shift that we applied to the counter
+    error_count -= mErrorCountShift;
     if (error_count > 0) {
         mOutputFile << "error-count\t" << error_count << "\n";
     }
