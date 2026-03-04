@@ -18,9 +18,17 @@ namespace nb = nanobind;
 
 using nb_cuda_array = nb::ndarray<nb::c_contig, nb::device::cuda>;
 
+struct BenchmarkParameters {
+    std::string Signature;
+    std::uint64_t Seed;
+    int Repeats;
+};
+
+BenchmarkParameters read_benchmark_parameters(int input_fd);
+
 class BenchmarkManager {
 public:
-    BenchmarkManager(int result_fd, int signature_fd, std::uint64_t seed, bool discard, bool nvtx);
+    BenchmarkManager(int result_fd, std::string signature, std::uint64_t seed, bool discard, bool nvtx);
     ~BenchmarkManager();
     std::pair<std::vector<nb::tuple>, std::vector<nb::tuple>> setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats);
     void do_bench_py(const std::string& kernel_qualname, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);

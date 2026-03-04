@@ -52,7 +52,38 @@ static nb::callable kernel_from_qualname(const std::string& qualname) {
     return nb::cast<nb::callable>(mod.attr(attr.c_str()));
 }
 
-BenchmarkManager::BenchmarkManager(int result_fd, int signature_fd, std::uint64_t seed, bool discard, bool nvtx) {
+BenchmarkParameters read_benchmark_parameters(int input_fd) {
+    char buf[256];
+    FILE* sig_file = fdopen(input_fd, "r");
+    if (!sig_file) {
+        throw std::runtime_error("Could not open signature pipe");
+    }
+    if (!fgets(buf, sizeof(buf), sig_file)) {
+        fclose(sig_file);
+        throw std::runtime_error("Could not read signature");
+    }
+    std::string signature = std::string(buf);
+
+    if (!fgets(buf, sizeof(buf), sig_file)) {
+        fclose(sig_file);
+        throw std::runtime_error("Could not read seed");
+    }
+    std::uint64_t seed = std::strtoull(buf, nullptr, 10);
+
+
+    if (!fgets(buf, sizeof(buf), sig_file)) {
+        fclose(sig_file);
+        throw std::runtime_error("Could not read repeats");
+    }
+    long repeats = std::strtol(buf, nullptr, 10);
+    if (repeats >= std::numeric_limits<int>::max()) {
+        throw std::runtime_error("Repeats exceeds 2^32");
+    }
+
+    return {signature, seed, static_cast<int>(repeats)};
+}
+
+BenchmarkManager::BenchmarkManager(int result_fd, std::string signature, std::uint64_t seed, bool discard, bool nvtx) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
@@ -66,18 +97,8 @@ BenchmarkManager::BenchmarkManager(int result_fd, int signature_fd, std::uint64_
 
     mNVTXEnabled = nvtx;
     mDiscardCache = discard;
+    mSignature = std::move(signature);
     mSeed = seed;
-    char sig_buf[256];
-    FILE* sig_file = fdopen(signature_fd, "r");
-    if (!sig_file) {
-        throw std::runtime_error("Could not open signature pipe");
-    }
-    if (!fgets(sig_buf, sizeof(sig_buf), sig_file)) {
-        fclose(sig_file);
-        throw std::runtime_error("Could not read signature");
-    }
-    fclose(sig_file);
-    mSignature = std::string(sig_buf);
 }
 
 BenchmarkManager::~BenchmarkManager() {

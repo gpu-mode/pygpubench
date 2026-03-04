@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "do_bench_impl",
     "do_bench_isolated",
     "basic_stats",
     "BenchmarkResult",
@@ -28,23 +27,20 @@ __all__ = [
 ]
 
 
-def do_bench_impl(out_fd: "multiprocessing.connection.Connection", signature: "multiprocessing.connection.Connection", qualname: str, test_generator: TestGeneratorInterface,
-                  test_args: dict, repeats: int, seed: int, stream: int = None, discard: bool = True,
-                  nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None):
+def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "multiprocessing.connection.Connection", qualname: str, test_generator: TestGeneratorInterface,
+                   test_args: dict, stream: int = None, discard: bool = True,
+                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None):
     """
     Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
     :param out_fd: Writable file descriptor to which benchmark results are written.
-    :param signature: Authentication token read by the C++ layer before untrusted code runs.
+    :param in_fd: Readable file descriptor that communicates benchmark configuration to the runner.
     :param qualname: Fully qualified name of the kernel object, e.g. ``my_package.my_module.kernel``.
     :param test_generator: A function that takes the test arguments (including a seed) and returns a test case; i.e., a tuple of (input, expected)
     :param test_args: keyword arguments to be passed to `test_generator`. Seed will be generated automatically.
-    :param repeats: Number of times to repeat the benchmark. `test_generator` will be called `repeats` times.
-    :param stream: Cuda stream on which to run the benchmark. If not given, torch's current stream is selected.
     :param discard: If true, then cache lines are discarded as part of cache clearing before each benchmark run.
     :param nvtx: Whether to enable NVTX markers for the benchmark. Mostly useful for debugging.
     :param tb_conn: A connection to a multiprocessing pipe for sending tracebacks to the parent process.
     """
-    assert repeats > 1
     if stream is None:
         import torch
         stream = torch.cuda.current_stream().cuda_stream
@@ -53,12 +49,10 @@ def do_bench_impl(out_fd: "multiprocessing.connection.Connection", signature: "m
         with DeterministicContext():
             _pygpubench.do_bench(
                 out_fd.fileno(),
-                signature.fileno(),
+                in_fd.fileno(),
                 qualname,
                 test_generator,
                 test_args,
-                repeats,
-                seed,
                 stream,
                 discard,
                 nvtx,
@@ -156,7 +150,7 @@ def do_bench_isolated(
 
     sig_r, sig_w = ctx.Pipe(duplex=False)
     signature = secrets.token_hex(16)
-    os.write(sig_w.fileno(), signature.encode())
+    os.write(sig_w.fileno(), f"{signature}\n{seed}\n{repeats}".encode())
     sig_w.close()
 
     try:
@@ -174,15 +168,13 @@ def do_bench_isolated(
     os.set_inheritable(write_fd, True)
 
     process = ctx.Process(
-        target=do_bench_impl,
+        target=_do_bench_impl,
         args=(
             result_child,
             sig_r,
             qualname,
             test_generator,
             test_args,
-            repeats,
-            seed,
             None,
             discard,
             nvtx,
