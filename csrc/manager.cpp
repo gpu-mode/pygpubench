@@ -111,7 +111,7 @@ BenchmarkParameters read_benchmark_parameters(int input_fd) {
     return {signature, seed, static_cast<int>(repeats)};
 }
 
-BenchmarkManager::BenchmarkManager(int result_fd, std::string signature, std::uint64_t seed, bool discard, bool nvtx) {
+BenchmarkManager::BenchmarkManager(int result_fd, std::string signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
@@ -124,6 +124,7 @@ BenchmarkManager::BenchmarkManager(int result_fd, std::string signature, std::ui
     }
 
     mNVTXEnabled = nvtx;
+    mLandlock = landlock;
     mDiscardCache = discard;
     mSignature = std::move(signature);
     mSeed = seed;
@@ -288,7 +289,9 @@ void BenchmarkManager::do_bench_py(const std::string& kernel_qualname, const std
     // clean up as much python state as we can
     trigger_gc();
 
-    install_landlock();
+    // restrict access to file system
+    if (mLandlock)
+        install_landlock();
 
     // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
     // after this, we cannot trust python anymore

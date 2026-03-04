@@ -105,7 +105,7 @@ void install_landlock() {
     // Prevent ptrace and /proc/self/mem tampering
     prctl(PR_SET_DUMPABLE, 0);
     // Prevent gaining privileges (if attacker tries setuid exploits)
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) <0) {
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
         throw std::system_error(errno, std::system_category(), "prctl(PR_SET_NO_NEW_PRIVS)");
     };
     // no new executable code pages
