@@ -70,6 +70,10 @@ class BenchmarkResult:
     errors: Optional[int]
     full: bool = False
 
+    @property
+    def success(self):
+        return self.full and self.errors is None
+
 
 @dataclasses.dataclass
 class BenchmarkStats:
