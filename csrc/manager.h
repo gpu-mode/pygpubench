@@ -28,7 +28,7 @@ BenchmarkParameters read_benchmark_parameters(int input_fd);
 
 class BenchmarkManager {
 public:
-    BenchmarkManager(int result_fd, std::string signature, std::uint64_t seed, bool discard, bool nvtx);
+    BenchmarkManager(int result_fd, std::string signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock);
     ~BenchmarkManager();
     std::pair<std::vector<nb::tuple>, std::vector<nb::tuple>> setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats);
     void do_bench_py(const std::string& kernel_qualname, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
@@ -72,6 +72,7 @@ private:
     unsigned mErrorCountShift = 0;
     bool mNVTXEnabled = false;
     bool mDiscardCache = true;
+    bool mLandlock = false;
     std::uint64_t mSeed = -1;
     std::vector<Expected> mExpectedOutputs;
 
