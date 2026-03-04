@@ -20,7 +20,8 @@
 
 static constexpr std::size_t ArenaSize = 2 * 1024 * 1024;
 
-void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
+extern void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
+extern void install_landlock();
 
 static void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
                                        const nb_cuda_array& received, float r_tol, float a_tol, unsigned seed, std::size_t n_bytes, cudaStream_t stream) {
@@ -287,15 +288,7 @@ void BenchmarkManager::do_bench_py(const std::string& kernel_qualname, const std
     // clean up as much python state as we can
     trigger_gc();
 
-    // Prevent ptrace and /proc/self/mem tampering
-    prctl(PR_SET_DUMPABLE, 0);
-    // Prevent gaining privileges (if attacker tries setuid exploits)
-    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-    // no new executable code pages
-    // note: this also prevents thread creating, which breaks torch.compile
-    // workaround: run torch.compile once from trusted python code, then the thread already
-    //             exists at this point. does not seem reliable, so disabled for now
-    // prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 0);
+    install_landlock();
 
     // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
     // after this, we cannot trust python anymore
