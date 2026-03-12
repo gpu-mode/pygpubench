@@ -29,7 +29,7 @@ def generate_test_case(*, seed, **kwargs):
     x, y = generate_input(**kwargs, seed=seed)
     expected = torch.empty_like(y)
     reference_kernel((expected, x))
-    return (x,), (y,), ((expected, 1e-6, 1e-6),)
+    return (y, x), (expected, 1e-6, 1e-6)
 
 
 res = pygpubench.do_bench_isolated("submission.kernel", generate_test_case,  {"size": 1024}, 100, 5, discard=True)
