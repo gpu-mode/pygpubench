@@ -87,6 +87,7 @@ private:
     void validate_result(Expected& expected, const nb_cuda_array& result, unsigned seed, cudaStream_t stream);
     void clear_cache(cudaStream_t stream);
     float measure_event_overhead(int repeats, cudaStream_t stream);
+    void setup_expected_outputs(const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected);
 };
 
 #endif //PYGPUBENCH_SRC_MANAGER_H

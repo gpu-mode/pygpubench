@@ -268,26 +268,8 @@ void BenchmarkManager::do_bench_py(
         shadow_arguments.emplace_back(make_shadow_args(arg, stream));
     }
 
-    mExpectedOutputs.resize(args.size());
-    for (int i = 0; i < args.size(); i++) {
-        const nb::tuple& expected_tuple = expected.at(i);
-        nb_cuda_array expected_array = nb::cast<nb_cuda_array>(expected_tuple[0]);
-
-        // make a copy of the expected result and put it in memory not owned by torch; overwrite the original
-        // so it cannot be read by cheating solutions.
-        void* copy_mem;
-        CUDA_CHECK(cudaMalloc(&copy_mem, expected_array.nbytes()));
-        CUDA_CHECK(cudaMemcpy(copy_mem, expected_array.data(), expected_array.nbytes(), cudaMemcpyDeviceToDevice));
-        CUDA_CHECK(cudaMemset(expected_array.data(), 0, expected_array.nbytes()));
-
-        if (expected.at(i).size() == 1) {
-            mExpectedOutputs.at(i) = {Expected::ExactMatch, copy_mem, expected_array.nbytes(), expected_array.dtype(), 0.f, 0.f};
-        } else {
-            float rtol = nb::cast<float>(expected_tuple[1]);
-            float atol = nb::cast<float>(expected_tuple[2]);
-            mExpectedOutputs.at(i) = {Expected::ApproxMatch, copy_mem, expected_array.nbytes(), expected_array.dtype(), atol, rtol};
-        }
-    }
+    // prepare expected outputs
+    setup_expected_outputs(args, expected);
 
     // clean up as much python state as we can
     trigger_gc();
@@ -452,4 +434,27 @@ float BenchmarkManager::measure_event_overhead(int repeats, cudaStream_t stream)
     std::sort(empty_event_times.begin(), empty_event_times.end());
     float median = empty_event_times.at(empty_event_times.size() / 2);
     return median;
+}
+
+void BenchmarkManager::setup_expected_outputs(const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected) {
+    mExpectedOutputs.resize(args.size());
+    for (int i = 0; i < args.size(); i++) {
+        const nb::tuple& expected_tuple = expected.at(i);
+        nb_cuda_array expected_array = nb::cast<nb_cuda_array>(expected_tuple[0]);
+
+        // make a copy of the expected result and put it in memory not owned by torch; overwrite the original
+        // so it cannot be read by cheating solutions.
+        void* copy_mem;
+        CUDA_CHECK(cudaMalloc(&copy_mem, expected_array.nbytes()));
+        CUDA_CHECK(cudaMemcpy(copy_mem, expected_array.data(), expected_array.nbytes(), cudaMemcpyDeviceToDevice));
+        CUDA_CHECK(cudaMemset(expected_array.data(), 0, expected_array.nbytes()));
+
+        if (expected.at(i).size() == 1) {
+            mExpectedOutputs.at(i) = {Expected::ExactMatch, copy_mem, expected_array.nbytes(), expected_array.dtype(), 0.f, 0.f};
+        } else {
+            float rtol = nb::cast<float>(expected_tuple[1]);
+            float atol = nb::cast<float>(expected_tuple[2]);
+            mExpectedOutputs.at(i) = {Expected::ApproxMatch, copy_mem, expected_array.nbytes(), expected_array.dtype(), atol, rtol};
+        }
+    }
 }
