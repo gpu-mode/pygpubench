@@ -101,7 +101,7 @@ void check_exact_match_launcher(unsigned* result, const std::byte* expected, con
 }
 
 template<typename Float>
-void check_check_approx_match_launcher_tpl(unsigned* result, const Float* expected, const Float* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
+void check_approx_match_launcher_tpl(unsigned* result, const Float* expected, const Float* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
     if ( !(a_tol >= 0) ) throw std::runtime_error("Absolute tolerance must be non-negative");
     if ( !(r_tol >= 0) ) throw std::runtime_error("Relative tolerance must be non-negative");
     int threads = 256;
@@ -121,16 +121,16 @@ void check_check_approx_match_launcher_tpl(unsigned* result, const Float* expect
     CUDA_CHECK(cudaLaunchKernelEx(&config, check_approx_match_kernel<Float>, result, expected, received, r_tol, a_tol, seed, size));
 }
 
-void check_check_approx_match_launcher(unsigned* result, const float* expected, const float* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
-    check_check_approx_match_launcher_tpl<float>(result, expected, received, r_tol, a_tol, seed, size, stream);
+void check_approx_match_launcher(unsigned* result, const float* expected, const float* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
+    check_approx_match_launcher_tpl<float>(result, expected, received, r_tol, a_tol, seed, size, stream);
 }
 
-void check_check_approx_match_launcher(unsigned* result, const nv_bfloat16* expected, const nv_bfloat16* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
-    check_check_approx_match_launcher_tpl<nv_bfloat16>(result, expected, received, r_tol, a_tol, seed, size, stream);
+void check_approx_match_launcher(unsigned* result, const nv_bfloat16* expected, const nv_bfloat16* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
+    check_approx_match_launcher_tpl<nv_bfloat16>(result, expected, received, r_tol, a_tol, seed, size, stream);
 }
 
-void check_check_approx_match_launcher(unsigned* result, const half* expected, const half* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
-    check_check_approx_match_launcher_tpl<half>(result, expected, received, r_tol, a_tol, seed, size, stream);
+void check_approx_match_launcher(unsigned* result, const half* expected, const half* received, float r_tol, float a_tol, unsigned seed, std::size_t size, cudaStream_t stream) {
+    check_approx_match_launcher_tpl<half>(result, expected, received, r_tol, a_tol, seed, size, stream);
 }
 
 /// pseudo-random invertible transformation of a very small subset of input cache lines.
