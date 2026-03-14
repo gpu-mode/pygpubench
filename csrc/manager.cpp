@@ -61,7 +61,7 @@ static void trigger_gc() {
     (void)gc.attr("collect")();
 }
 
-BenchmarkParameters read_benchmark_parameters(int input_fd) {
+BenchmarkParameters read_benchmark_parameters(int input_fd, void* signature_out) {
     char buf[256];
     FILE* inp_file = fdopen(input_fd, "r");
     if (!inp_file) {
@@ -81,13 +81,19 @@ BenchmarkParameters read_benchmark_parameters(int input_fd) {
         }
     };
 
-    read_line("signature");
-    std::string signature(buf);
-    if (signature.empty() || signature.back() != '\n') {
+    if (fread(signature_out, 1, 32, inp_file) != 32) {
+        if (feof(inp_file)) {
+            fclose(inp_file);
+            throw std::runtime_error("Unexpected EOF reading signature (got fewer than 32 bytes)");
+        }
         fclose(inp_file);
-        throw std::invalid_argument("Malformed or empty signature");
+        throw std::system_error(errno, std::generic_category(), "fread failed reading signature");
     }
-    signature.pop_back();
+
+    if (fgetc(inp_file) != '\n') {
+        fclose(inp_file);
+        throw std::runtime_error("Expected newline after signature");
+    }
 
     read_line("seed");
     char* end;
@@ -106,10 +112,10 @@ BenchmarkParameters read_benchmark_parameters(int input_fd) {
     }
 
     fclose(inp_file);
-    return {signature, seed, static_cast<int>(repeats)};
+    return {seed, static_cast<int>(repeats)};
 }
 
-BenchmarkManager::BenchmarkManager(int result_fd, std::string signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock) {
+BenchmarkManager::BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock) : mSignature(std::move(signature)) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
@@ -124,7 +130,6 @@ BenchmarkManager::BenchmarkManager(int result_fd, std::string signature, std::ui
     mNVTXEnabled = nvtx;
     mLandlock = landlock;
     mDiscardCache = discard;
-    mSignature = std::move(signature);
     mSeed = seed;
 }
 
@@ -405,7 +410,9 @@ void BenchmarkManager::do_bench_py(
         CUDA_CHECK(cudaEventElapsedTime(&duration, mStartEvents.at(i), mEndEvents.at(i)));
         fprintf(mOutputPipe, "%d\t%f\n", test_order.at(i) - 1, duration * 1000);
     }
-    fprintf(mOutputPipe, "signature\t%s\n", mSignature.c_str());
+    fprintf(mOutputPipe, "signature\t");
+    fwrite(mSignature.data(), 1, 32, mOutputPipe);
+    fputc('\n', mOutputPipe);
     fflush(mOutputPipe);
 
     // cleanup events

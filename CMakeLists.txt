@@ -26,6 +26,7 @@ nanobind_add_module(_pygpubench
         csrc/clear_l2.cu
         csrc/check.cu
         csrc/landlock.cpp
+        csrc/obfuscate.cpp
 )
 target_link_libraries(_pygpubench PUBLIC Python::Module CUDA::cudart)
 # set a bunch of hardening options to make it harder to tamper with the executable
