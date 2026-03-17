@@ -4,15 +4,21 @@
 
 #include <cstdint>
 #include <fcntl.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <sys/mman.h>
+#include <string_view>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <linux/landlock.h>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
+#include <vector>
 
 class Fd {
 
@@ -121,4 +127,56 @@ void install_landlock() {
     // prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 0);
 
     landlock_restrict_self(ruleset_fd, 0);
+}
+
+
+// mseal:
+// with mseal we can prevent address regions from being remapped with different memory protection attributes
+// In particular, we can prevent making existing executable regions (i.e., loaded libraries) writeable,
+// so that attempts to monkeypatch, e.g., cudaEventTimeElapsed will fail. Crucially, once sealed,
+// even the running process itself cannot unseal that adress range, or replace it with a new mapping.
+
+#ifndef __NR_mseal
+#define __NR_mseal 462  // x86-64
+#endif
+
+void mseal(void* addr, size_t len, std::string_view name) {
+    if (syscall(__NR_mseal, addr, len, 0UL) < 0) {
+        throw std::system_error(errno, std::generic_category(), "mseal: " + std::string(name));
+    }
+}
+
+// these cannot be sealed
+static const std::unordered_set<std::string> excluded_paths = {"[vdso]", "[vvar]", "[vsyscall]"};
+
+void seal_executable_mappings() {
+    std::ifstream maps("/proc/self/maps");
+    if (!maps)
+        throw std::system_error(errno, std::generic_category(), "fopen");
+
+    struct Region { uintptr_t start, end; std::string src; };
+    std::vector<Region> to_seal;
+
+    std::string line;
+    while (std::getline(maps, line)) {
+        std::istringstream ss(line);
+        std::string range, perms, offset, dev, inode, path;
+        if (!(ss >> range >> perms >> offset >> dev >> inode)) continue;
+        ss >> path; // optional, may be empty
+
+        if (perms.find('x') == std::string::npos) continue;
+        if (excluded_paths.count(path)) continue;
+
+        auto dash = range.find('-');
+        if (dash == std::string::npos) continue;
+
+        uintptr_t start = std::stoul(range.substr(0, dash), nullptr, 16);
+        uintptr_t end   = std::stoul(range.substr(dash + 1), nullptr, 16);
+        to_seal.push_back({start, end, line});
+        fprintf(stdout, "%s\n", line.c_str());
+    }
+
+    for (auto& r : to_seal) {
+        mseal(reinterpret_cast<void*>(r.start), r.end - r.start, r.src);
+    }
 }

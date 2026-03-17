@@ -20,6 +20,7 @@ static constexpr std::size_t ArenaSize = 2 * 1024 * 1024;
 
 extern void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
 extern void install_landlock();
+extern void seal_executable_mappings();
 
 static void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
                                        const nb_cuda_array& received, float r_tol, float a_tol, unsigned seed, std::size_t n_bytes, cudaStream_t stream) {
@@ -282,6 +283,8 @@ void BenchmarkManager::do_bench_py(
     // restrict access to file system
     if (mLandlock)
         install_landlock();
+
+    seal_executable_mappings();
 
     // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
     // after this, we cannot trust python anymore
