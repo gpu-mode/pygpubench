@@ -16,6 +16,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <linux/landlock.h>
+#include <seccomp.h>
 #include <system_error>
 #include <unordered_set>
 #include <utility>
@@ -114,21 +115,6 @@ void install_landlock() {
     allow_path(ruleset_fd, "/tmp", RW);
     allow_path(ruleset_fd, "/dev", RW); // needed for /dev/null etc, used e.g., by triton
 
-    // Prevent ptrace and /proc/self/mem tampering
-    if (prctl(PR_SET_DUMPABLE, 0) < 0) {
-        throw std::system_error(errno, std::system_category(), "prctl(PR_SET_DUMPABLE)");
-    }
-
-    // Prevent gaining privileges (if attacker tries setuid exploits)
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
-        throw std::system_error(errno, std::system_category(), "prctl(PR_SET_NO_NEW_PRIVS)");
-    };
-    // no new executable code pages
-    // note: this also prevents thread creating, which breaks torch.compile
-    // workaround: run torch.compile once from trusted python code, then the thread already
-    //             exists at this point. does not seem reliable, so disabled for now
-    // prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 0);
-
     landlock_restrict_self(ruleset_fd, 0);
 }
 
@@ -192,4 +178,63 @@ void seal_executable_mappings() {
     for (auto& r : to_seal) {
         mseal(reinterpret_cast<void*>(r.start), r.end - r.start, r.src);
     }
+}
+
+static inline void check_seccomp(int rc, const char* what) {
+    if (rc < 0)
+        throw std::system_error(-rc, std::generic_category(), what);
+}
+
+void setup_seccomp_filter(scmp_filter_ctx ctx) {
+    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(ptrace), 0),
+                      "block ptrace");
+
+    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(prctl), 2,
+                      SCMP_A0(SCMP_CMP_EQ, PR_SET_DUMPABLE),
+                      SCMP_A1(SCMP_CMP_EQ, 1)),
+                  "block prctl(SET_DUMPABLE, 1)");
+
+    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(prctl), 1,
+                      SCMP_A0(SCMP_CMP_EQ, PR_SET_SECCOMP)),
+                  "block prctl(SET_SECCOMP)");
+    // TODO figure out what else we can and should block
+    /*
+    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(mprotect), 1,
+                      SCMP_A2(SCMP_CMP_MASKED_EQ, PROT_WRITE, PROT_WRITE)),
+                  "block mprotect+WRITE");
+
+    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(pkey_mprotect), 1,
+                      SCMP_A2(SCMP_CMP_MASKED_EQ, PROT_WRITE, PROT_WRITE)),
+                  "block pkey_mprotect+WRITE");
+    */
+}
+
+void install_seccomp_filter() {
+    scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);
+    if (!ctx) throw std::runtime_error("seccomp_init failed");
+    try {
+        setup_seccomp_filter(ctx);
+    }  catch (...) {
+        seccomp_release(ctx);
+        throw;
+    }
+
+    // Prevent ptrace and /proc/self/mem tampering
+    if (prctl(PR_SET_DUMPABLE, 0) < 0) {
+        throw std::system_error(errno, std::system_category(), "prctl(PR_SET_DUMPABLE)");
+    }
+
+    // Prevent gaining privileges (if attacker tries setuid exploits)
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+        throw std::system_error(errno, std::system_category(), "prctl(PR_SET_NO_NEW_PRIVS)");
+    };
+    // no new executable code pages
+    // note: this also prevents thread creating, which breaks torch.compile
+    // workaround: run torch.compile once from trusted python code, then the thread already
+    //             exists at this point. does not seem reliable, so disabled for now
+    // prctl(PR_SET_MDWE, PR_MDWE_REFUSE_EXEC_GAIN, 0, 0, 0);
+
+    int rc = seccomp_load(ctx);
+    seccomp_release(ctx);
+    check_seccomp(rc, "seccomp_load");
 }

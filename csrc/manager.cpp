@@ -22,6 +22,7 @@ extern void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t
 extern void install_landlock();
 extern bool mseal_supported();
 extern void seal_executable_mappings();
+extern void install_seccomp_filter();
 
 static void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
                                        const nb_cuda_array& received, float r_tol, float a_tol, unsigned seed, std::size_t n_bytes, cudaStream_t stream) {
@@ -292,6 +293,8 @@ void BenchmarkManager::do_bench_py(
         }
         seal_executable_mappings();
     }
+
+    install_seccomp_filter();
 
     // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
     // after this, we cannot trust python anymore
