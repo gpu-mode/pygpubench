@@ -131,6 +131,7 @@ BenchmarkManager::BenchmarkManager(int result_fd, ObfuscatedHexDigest signature,
 
     mNVTXEnabled = nvtx;
     mLandlock = landlock;
+    mSeal = mseal;
     mDiscardCache = discard;
     mSeed = seed;
 }
@@ -285,7 +286,12 @@ void BenchmarkManager::do_bench_py(
     if (mLandlock)
         install_landlock();
 
-    seal_executable_mappings();
+    if (mSeal) {
+        if (!mseal_supported()) {
+            throw std::runtime_error("mseal=True but kernel does not support sealing executable mappings");
+        }
+        seal_executable_mappings();
+    }
 
     // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
     // after this, we cannot trust python anymore

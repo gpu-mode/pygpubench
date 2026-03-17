@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <sys/mman.h>
@@ -18,6 +19,8 @@
 #include <system_error>
 #include <unordered_set>
 #include <utility>
+#include <sstream>
+#include <string>
 #include <vector>
 
 class Fd {
@@ -133,7 +136,7 @@ void install_landlock() {
 // mseal:
 // with mseal we can prevent address regions from being remapped with different memory protection attributes
 // In particular, we can prevent making existing executable regions (i.e., loaded libraries) writeable,
-// so that attempts to monkeypatch, e.g., cudaEventTimeElapsed will fail. Crucially, once sealed,
+// so that attempts to monkeypatch, e.g., cudaEventElapsedTime will fail. Crucially, once sealed,
 // even the running process itself cannot unseal that address range or replace it with a new mapping.
 
 #ifndef __NR_mseal
@@ -162,7 +165,7 @@ static const std::unordered_set<std::string> excluded_paths = {"[vdso]", "[vvar]
 void seal_executable_mappings() {
     std::ifstream maps("/proc/self/maps");
     if (!maps)
-        throw std::system_error(errno, std::generic_category(), "fopen");
+        throw std::runtime_error("Failed to open /proc/self/maps");
 
     struct Region { uintptr_t start, end; std::string src; };
     std::vector<Region> to_seal;
@@ -180,8 +183,8 @@ void seal_executable_mappings() {
         auto dash = range.find('-');
         if (dash == std::string::npos) continue;
 
-        uintptr_t start = std::stoul(range.substr(0, dash), nullptr, 16);
-        uintptr_t end   = std::stoul(range.substr(dash + 1), nullptr, 16);
+        uintptr_t start = std::stoull(range.substr(0, dash), nullptr, 16);
+        uintptr_t end   = std::stoull(range.substr(dash + 1), nullptr, 16);
         to_seal.push_back({start, end, line});
         // fprintf(stdout, "%s\n", line.c_str());
     }
