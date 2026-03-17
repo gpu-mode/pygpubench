@@ -29,7 +29,7 @@ BenchmarkParameters read_benchmark_parameters(int input_fd, void* signature_out)
 
 class BenchmarkManager {
 public:
-    BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock);
+    BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal);
     ~BenchmarkManager();
     std::pair<std::vector<nb::tuple>, std::vector<nb::tuple>> setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats);
     void do_bench_py(const std::string& kernel_qualname, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
@@ -73,7 +73,8 @@ private:
     unsigned mErrorCountShift = 0;
     bool mNVTXEnabled = false;
     bool mDiscardCache = true;
-    bool mLandlock = false;
+    bool mLandlock = true;
+    bool mSeal = true;
     std::uint64_t mSeed = -1;
     std::vector<Expected> mExpectedOutputs;
 

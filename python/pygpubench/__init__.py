@@ -29,7 +29,7 @@ __all__ = [
 
 def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "multiprocessing.connection.Connection", qualname: str, test_generator: TestGeneratorInterface,
                    test_args: dict, stream: int = None, discard: bool = True,
-                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True):
+                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True, mseal=True):
     """
     Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
     :param out_fd: Writable file descriptor to which benchmark results are written.
@@ -41,6 +41,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
     :param nvtx: Whether to enable NVTX markers for the benchmark. Mostly useful for debugging.
     :param tb_conn: A connection to a multiprocessing pipe for sending tracebacks to the parent process.
     :param landlock: Whether to enable landlock. Enabled by default, prevents write access to the file system outside /tmp.
+    :param mseal: Whether to enable memory sealing. Enabled by default, prevents making executable mappings writable.
     """
     if stream is None:
         import torch
@@ -58,6 +59,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
                 discard,
                 nvtx,
                 landlock,
+                mseal,
             )
     except BaseException:
         if tb_conn is not None:
@@ -147,6 +149,7 @@ def do_bench_isolated(
         nvtx: bool = False,
         timeout: int = 300,
         landlock = True,
+        mseal = True,
 ) -> BenchmarkResult:
     """
     Runs kernel benchmark (`do_bench_impl`) in a subprocess for proper isolation.
@@ -190,6 +193,7 @@ def do_bench_isolated(
             nvtx,
             child_tb_conn,
             landlock,
+            mseal,
         ),
     )
 

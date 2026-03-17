@@ -12,12 +12,12 @@
 namespace nb = nanobind;
 
 
-void do_bench(int result_fd, int input_fd, const std::string& kernel_qualname, const nb::object& test_generator, const nb::dict& test_kwargs, std::uintptr_t stream, bool discard, bool nvtx, bool landlock) {
+void do_bench(int result_fd, int input_fd, const std::string& kernel_qualname, const nb::object& test_generator, const nb::dict& test_kwargs, std::uintptr_t stream, bool discard, bool nvtx, bool landlock, bool mseal) {
     ObfuscatedHexDigest signature;
     std::mt19937 rng(std::random_device{}());
     signature.allocate(32, rng);
     auto config = read_benchmark_parameters(input_fd, signature.data());
-    BenchmarkManager mgr(result_fd, std::move(signature), config.Seed, discard, nvtx, landlock);
+    BenchmarkManager mgr(result_fd, std::move(signature), config.Seed, discard, nvtx, landlock, mseal);
     auto [args, expected] = mgr.setup_benchmark(nb::cast<nb::callable>(test_generator), test_kwargs,  config.Repeats);
     mgr.do_bench_py(kernel_qualname, args, expected, reinterpret_cast<cudaStream_t>(stream));
 }

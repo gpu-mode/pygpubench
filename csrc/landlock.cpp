@@ -134,11 +134,21 @@ void install_landlock() {
 // with mseal we can prevent address regions from being remapped with different memory protection attributes
 // In particular, we can prevent making existing executable regions (i.e., loaded libraries) writeable,
 // so that attempts to monkeypatch, e.g., cudaEventTimeElapsed will fail. Crucially, once sealed,
-// even the running process itself cannot unseal that adress range, or replace it with a new mapping.
+// even the running process itself cannot unseal that address range or replace it with a new mapping.
 
 #ifndef __NR_mseal
 #define __NR_mseal 462  // x86-64
 #endif
+
+bool mseal_supported() {
+    // Call mseal with a null/zero range - older kernels don't implement this syscall
+    // ENOSYS = not implemented; EINVAL = implemented but bad args (expected).
+    static bool supported = [] {
+        syscall(__NR_mseal, 0, 0, 0UL);
+        return errno != ENOSYS;
+    }();
+    return supported;
+}
 
 void mseal(void* addr, size_t len, std::string_view name) {
     if (syscall(__NR_mseal, addr, len, 0UL) < 0) {
@@ -173,7 +183,7 @@ void seal_executable_mappings() {
         uintptr_t start = std::stoul(range.substr(0, dash), nullptr, 16);
         uintptr_t end   = std::stoul(range.substr(dash + 1), nullptr, 16);
         to_seal.push_back({start, end, line});
-        fprintf(stdout, "%s\n", line.c_str());
+        // fprintf(stdout, "%s\n", line.c_str());
     }
 
     for (auto& r : to_seal) {

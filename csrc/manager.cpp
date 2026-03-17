@@ -20,6 +20,7 @@ static constexpr std::size_t ArenaSize = 2 * 1024 * 1024;
 
 extern void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
 extern void install_landlock();
+extern bool mseal_supported();
 extern void seal_executable_mappings();
 
 static void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
@@ -116,7 +117,7 @@ BenchmarkParameters read_benchmark_parameters(int input_fd, void* signature_out)
     return {seed, static_cast<int>(repeats)};
 }
 
-BenchmarkManager::BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock) : mSignature(std::move(signature)) {
+BenchmarkManager::BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal) : mSignature(std::move(signature)) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
