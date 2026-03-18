@@ -77,6 +77,8 @@ private:
     bool mSeal = true;
     std::uint64_t mSeed = -1;
     std::vector<Expected> mExpectedOutputs;
+    std::vector<ShadowArgumentList> mShadowArguments;
+    std::vector<nb_cuda_array> mOutputBuffers;
 
     FILE* mOutputPipe = nullptr;
     ObfuscatedHexDigest mSignature;

@@ -266,15 +266,14 @@ void BenchmarkManager::do_bench_py(
     // extract relevant infos from args and expected
     // by convention, the first arg is the output tensor.
     // TODO handle multiple outputs
-    std::vector<nb_cuda_array> outputs(args.size());
+    mOutputBuffers.resize(args.size());
     for (int i = 0; i < args.size(); i++) {
-        outputs.at(i) = nb::cast<nb_cuda_array>(args.at(i)[0]);
+        mOutputBuffers.at(i) = nb::cast<nb_cuda_array>(args.at(i)[0]);
     }
 
     // Generate "shadow" copies of input arguments
-    std::vector<ShadowArgumentList> shadow_arguments;
     for (const auto & arg : args) {
-        shadow_arguments.emplace_back(make_shadow_args(arg, stream));
+        mShadowArguments.emplace_back(make_shadow_args(arg, stream));
     }
 
     // prepare expected outputs
@@ -379,7 +378,7 @@ void BenchmarkManager::do_bench_py(
         // unfortunately, we need to do this before clearing the cache, so there is a window of opportunity
         // *but* we deliberately modify a small subset of the inputs, which only get corrected immediately before
         // the user code call.
-        for (auto& shadow_arg : shadow_arguments.at(test_id)) {
+        for (auto& shadow_arg : mShadowArguments.at(test_id)) {
             if (shadow_arg) {
                 CUDA_CHECK(cudaMemcpyAsync(shadow_arg->Original.data(), shadow_arg->Shadow, shadow_arg->Original.nbytes(), cudaMemcpyDeviceToDevice, stream));
             }
@@ -391,7 +390,7 @@ void BenchmarkManager::do_bench_py(
 
         // ok, now we revert the canaries. This _does_ bring in the corresponding cache lines,
         // but they are very sparse (1/256), so that seems like an acceptable trade-off
-        for (auto& shadow_arg : shadow_arguments.at(test_id)) {
+        for (auto& shadow_arg : mShadowArguments.at(test_id)) {
             if (shadow_arg) {
                 canaries(shadow_arg->Original.data(), shadow_arg->Original.nbytes(), shadow_arg->Seed, stream);
             }
@@ -404,7 +403,7 @@ void BenchmarkManager::do_bench_py(
         CUDA_CHECK(cudaEventRecord(mEndEvents.at(i), stream));
         // immediately after the kernel, launch the checking code; if there is some unsynced work done on another stream,
         // this increases the chance of detection.
-        validate_result(mExpectedOutputs.at(test_id), outputs.at(test_id), check_seed_generator(rng), stream);
+        validate_result(mExpectedOutputs.at(test_id), mOutputBuffers.at(test_id), check_seed_generator(rng), stream);
     }
     nvtx_pop();
 
