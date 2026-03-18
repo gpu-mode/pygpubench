@@ -92,6 +92,10 @@ private:
     void clear_cache(cudaStream_t stream);
     float measure_event_overhead(int repeats, cudaStream_t stream);
     void setup_expected_outputs(const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected);
+    void setup_test_cases(const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
+
+    void install_protections();
+    int run_warmup(nb::callable& kernel, const nb::tuple& args, cudaStream_t stream);
 };
 
 #endif //PYGPUBENCH_SRC_MANAGER_H

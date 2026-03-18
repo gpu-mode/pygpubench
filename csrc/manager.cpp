@@ -249,36 +249,7 @@ BenchmarkManager::ShadowArgument& BenchmarkManager::ShadowArgument::operator=(Sh
     return *this;
 }
 
-void BenchmarkManager::do_bench_py(
-        const std::string& kernel_qualname,
-        const std::vector<nb::tuple>& args,
-        const std::vector<nb::tuple>& expected,
-        cudaStream_t stream)
-{
-    if (args.size() < 5) {
-        throw std::runtime_error("Not enough test cases to run benchmark");
-    }
-    if (expected.size() != args.size()) {
-        throw std::runtime_error("Expected results and test case list do not have the same length");
-    }
-    int calls = args.size() - 1;
-
-    // extract relevant infos from args and expected
-    // by convention, the first arg is the output tensor.
-    // TODO handle multiple outputs
-    mOutputBuffers.resize(args.size());
-    for (int i = 0; i < args.size(); i++) {
-        mOutputBuffers.at(i) = nb::cast<nb_cuda_array>(args.at(i)[0]);
-    }
-
-    // Generate "shadow" copies of input arguments
-    for (const auto & arg : args) {
-        mShadowArguments.emplace_back(make_shadow_args(arg, stream));
-    }
-
-    // prepare expected outputs
-    setup_expected_outputs(args, expected);
-
+void BenchmarkManager::install_protections() {
     // clean up as much python state as we can
     trigger_gc();
 
@@ -294,6 +265,49 @@ void BenchmarkManager::do_bench_py(
     }
 
     install_seccomp_filter();
+}
+
+int BenchmarkManager::run_warmup(nb::callable& kernel, const nb::tuple& args, cudaStream_t stream) {
+    std::chrono::high_resolution_clock::time_point cpu_start = std::chrono::high_resolution_clock::now();
+    int warmup_run_count = 0;
+    double time_estimate;
+    nvtx_push("timing");
+    while (true) {
+        // note: we are assuming here that calling the kernel multiple times for the same input is a safe operation
+        // this is only potentially problematic for in-place kernels;
+        CUDA_CHECK(cudaDeviceSynchronize());
+        clear_cache(stream);
+        kernel(*args);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        std::chrono::high_resolution_clock::time_point cpu_end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> elapsed_seconds = cpu_end - cpu_start;
+        ++warmup_run_count;
+        if (elapsed_seconds.count() > mWarmupSeconds) {
+            time_estimate = elapsed_seconds.count() / warmup_run_count;
+            break;
+        }
+    }
+    nvtx_pop();
+
+    // note: this is a very conservative estimate. Timing above was measured with syncs between every kernel.
+    int calls = mOutputBuffers.size() - 1;
+    const int actual_calls = std::clamp(static_cast<int>(std::ceil(mBenchmarkSeconds / time_estimate)), 1, calls);
+
+    if (actual_calls < 3) {
+        throw std::runtime_error("The initial speed test indicated that running times are too slow to generate meaningful benchmark numbers: " + std::to_string(time_estimate));
+    }
+
+    return actual_calls;
+}
+
+void BenchmarkManager::do_bench_py(
+        const std::string& kernel_qualname,
+        const std::vector<nb::tuple>& args,
+        const std::vector<nb::tuple>& expected,
+        cudaStream_t stream)
+{
+    setup_test_cases(args, expected, stream);
+    install_protections();
 
     // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
     // after this, we cannot trust python anymore
@@ -307,34 +321,7 @@ void BenchmarkManager::do_bench_py(
     nvtx_pop();
 
     // now, run a few more times for warmup; in total aim for 1 second of warmup runs
-    std::chrono::high_resolution_clock::time_point cpu_start = std::chrono::high_resolution_clock::now();
-    int warmup_run_count = 0;
-    double time_estimate;
-    nvtx_push("timing");
-    while (true) {
-        // note: we are assuming here that calling the kernel multiple times for the same input is a safe operation
-        // this is only potentially problematic for in-place kernels;
-        CUDA_CHECK(cudaDeviceSynchronize());
-        clear_cache(stream);
-        kernel(*args.at(0));
-        CUDA_CHECK(cudaDeviceSynchronize());
-        std::chrono::high_resolution_clock::time_point cpu_end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> elapsed_seconds = cpu_end - cpu_start;
-        ++warmup_run_count;
-        if (elapsed_seconds.count() > mWarmupSeconds) {
-            time_estimate = elapsed_seconds.count() / warmup_run_count;
-            break;
-        }
-    }
-    nvtx_pop();
-
-    // note: this is a very conservative estimate. Timing above was measured with syncs between every kernel.
-    const int actual_calls = std::clamp(static_cast<int>(std::ceil(mBenchmarkSeconds / time_estimate)), 1, calls);
-
-    if (actual_calls < 3) {
-        throw std::runtime_error("The initial speed test indicated that running times are too slow to generate meaningful benchmark numbers: " + std::to_string(time_estimate));
-    }
-
+    int actual_calls = run_warmup(kernel, args.at(0), stream);
     constexpr int DRY_EVENTS = 100;
     const int num_events = std::max(actual_calls, DRY_EVENTS);
     mStartEvents.resize(num_events);
@@ -432,6 +419,31 @@ void BenchmarkManager::do_bench_py(
     for (auto& event : mEndEvents) CUDA_CHECK(cudaEventDestroy(event));
     mStartEvents.clear();
     mEndEvents.clear();
+}
+
+void BenchmarkManager::setup_test_cases( const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream) {
+    if (args.size() < 5) {
+        throw std::runtime_error("Not enough test cases to run benchmark");
+    }
+    if (expected.size() != args.size()) {
+        throw std::runtime_error("Expected results and test case list do not have the same length");
+    }
+
+    // extract relevant infos from args and expected
+    // by convention, the first arg is the output tensor.
+    // TODO handle multiple outputs
+    mOutputBuffers.resize(args.size());
+    for (int i = 0; i < args.size(); i++) {
+        mOutputBuffers.at(i) = nb::cast<nb_cuda_array>(args.at(i)[0]);
+    }
+
+    // Generate "shadow" copies of input arguments
+    for (const auto & arg : args) {
+        mShadowArguments.emplace_back(make_shadow_args(arg, stream));
+    }
+
+    // prepare expected outputs
+    setup_expected_outputs(args, expected);
 }
 
 float BenchmarkManager::measure_event_overhead(int repeats, cudaStream_t stream) {
