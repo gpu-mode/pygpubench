@@ -115,6 +115,11 @@ void install_landlock() {
     allow_path(ruleset_fd, "/tmp", RW);
     allow_path(ruleset_fd, "/dev", RW); // needed for /dev/null etc, used e.g., by triton
 
+    // required for landlock
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {
+        throw std::system_error(errno, std::system_category(), "prctl(PR_SET_NO_NEW_PRIVS)");
+    };
+
     landlock_restrict_self(ruleset_fd, 0);
 }
 
