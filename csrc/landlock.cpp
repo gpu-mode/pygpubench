@@ -190,13 +190,17 @@ void setup_seccomp_filter(scmp_filter_ctx ctx) {
                       "block ptrace");
 
     check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(prctl), 2,
-                      SCMP_A0(SCMP_CMP_EQ, PR_SET_DUMPABLE),
-                      SCMP_A1(SCMP_CMP_EQ, 1)),
-                  "block prctl(SET_DUMPABLE, 1)");
+                     SCMP_A0(SCMP_CMP_EQ, PR_SET_DUMPABLE),
+                     SCMP_A1(SCMP_CMP_NE, 0)),
+                  "block prctl(SET_DUMPABLE!=0)");
 
     check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(prctl), 1,
-                      SCMP_A0(SCMP_CMP_EQ, PR_SET_SECCOMP)),
-                  "block prctl(SET_SECCOMP)");
+                     SCMP_A0(SCMP_CMP_EQ, PR_SET_SECCOMP)),
+                "block prctl(SET_SECCOMP)");
+
+    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(prctl), 1,
+                     SCMP_A0(SCMP_CMP_EQ, PR_SET_PTRACER)),
+                "block prctl(SET_PTRACER)");
     // TODO figure out what else we can and should block
     /*
     check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(mprotect), 1,
