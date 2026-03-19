@@ -11,9 +11,10 @@ try to exploit benchmarking flaws to receive higher scores.
 To benchmark a kernel, two ingredients are needed:
 1. The qualified name of the kernel function. It is important that the testing script itself does not import the kernel function, as this implies executing untrusted code.
 2. A function that generates test/benchmark inputs. This function takes keyword arguments of configuration parameters,
-   as well as the reserved argument `seed` to randomize the problem. It returns two tuples:
-   The first contains the inputs for the kernel and will
-   be used to call the kernel function, and the second contains the expected output and the required absolute and relative tolerance.
+   as well as the reserved argument `seed` to randomize the problem. It returns the kernel arguments.
+   Any writable / checked output must be wrapped in `pygpubench.out(...)` together
+   with its expected result and optional tolerances. For in/out args whose initial contents matter,
+   pass `uses_current_value=True`.
 
 ```python
 import torch
@@ -29,7 +30,10 @@ def generate_test_case(*, seed, **kwargs):
     x, y = generate_input(**kwargs, seed=seed)
     expected = torch.empty_like(y)
     reference_kernel((expected, x))
-    return (y, x), (expected, 1e-6, 1e-6)
+    return (
+        pygpubench.out(y, expected=(expected, 1e-6, 1e-6)),
+        x,
+    )
 
 
 res = pygpubench.do_bench_isolated("submission.kernel", generate_test_case,  {"size": 1024}, 100, 5, discard=True)

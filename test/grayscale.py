@@ -32,7 +32,10 @@ def generate_test_case(**kwargs):
     x, y = generate_input(**kwargs)
     expected = torch.empty_like(y)
     reference_kernel((expected, x))
-    return (x,), (y,), ((expected, 1e-6, 1e-6),)
+    return (
+        pygpubench.out(y, expected=(expected, 1e-6, 1e-6)),
+        x,
+    )
 
 
 # note: can't enable landlock or mseal when running on modal :(

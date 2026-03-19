@@ -151,12 +151,13 @@ BenchmarkManager::~BenchmarkManager() {
     }
 }
 
-std::tuple<std::vector<nb::tuple>, std::vector<nb::tuple>, std::vector<nb::tuple>> BenchmarkManager::setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats) {
+std::tuple<std::vector<nb::tuple>, std::vector<std::vector<std::size_t>>, std::vector<std::vector<std::size_t>>, std::vector<nb::tuple>> BenchmarkManager::setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats) {
     std::mt19937_64 rng(mSeed);
     std::uniform_int_distribution<std::uint64_t> dist(0, std::numeric_limits<std::uint64_t>::max());
     // generate one more input to handle warmup
     std::vector<nb::tuple> call_args(repeats + 1);
-    std::vector<nb::tuple> outputs(repeats + 1);
+    std::vector<std::vector<std::size_t>> output_positions(repeats + 1);
+    std::vector<std::vector<std::size_t>> input_output_positions(repeats + 1);
     std::vector<nb::tuple> expected(repeats + 1);
     for (int i = 0; i < repeats + 1; i++) {
         // create new copy of the kwargs dict
@@ -171,41 +172,74 @@ std::tuple<std::vector<nb::tuple>, std::vector<nb::tuple>, std::vector<nb::tuple
         call_kwargs["seed"] = dist(rng);
 
         auto gen = nb::cast<nb::tuple>(generate_test_case(**call_kwargs));
-        if (gen.size() != 3) {
-            throw std::runtime_error("generate_test_case must return a 3-tuple: (inputs, outputs, expected)");
+        if (gen.size() != 4) {
+            throw std::runtime_error("generate_test_case must return a 4-tuple: (args, output_positions, input_output_positions, expected)");
         }
 
-        nb::tuple inputs = nb::cast<nb::tuple>(gen[0]);
-        outputs[i] = nb::cast<nb::tuple>(gen[1]);
-        expected[i] = nb::cast<nb::tuple>(gen[2]);
+        call_args[i] = nb::cast<nb::tuple>(gen[0]);
+        nb::tuple output_positions_tuple = nb::cast<nb::tuple>(gen[1]);
+        nb::tuple input_output_positions_tuple = nb::cast<nb::tuple>(gen[2]);
+        expected[i] = nb::cast<nb::tuple>(gen[3]);
 
-        if (outputs[i].size() == 0) {
-            throw std::runtime_error("outputs tuple must not be empty");
+        if (output_positions_tuple.size() == 0) {
+            throw std::runtime_error("output_positions tuple must not be empty");
         }
-        if (expected[i].size() != outputs[i].size()) {
-            throw std::runtime_error("expected tuple size must match outputs tuple size");
+        if (expected[i].size() != output_positions_tuple.size()) {
+            throw std::runtime_error("expected tuple size must match output_positions tuple size");
         }
-
-        PyObject* combined = PySequence_Concat(outputs[i].ptr(), inputs.ptr());
-        if (combined == nullptr) {
-            throw nb::python_error();
+        std::vector<bool> seen_output(call_args[i].size(), false);
+        output_positions[i].reserve(output_positions_tuple.size());
+        for (int j = 0; j < output_positions_tuple.size(); j++) {
+            std::size_t pos = nb::cast<std::size_t>(output_positions_tuple[j]);
+            if (pos >= static_cast<std::size_t>(call_args[i].size())) {
+                throw std::runtime_error("output_positions contains an index outside the args tuple");
+            }
+            if (seen_output[pos]) {
+                throw std::runtime_error("output_positions contains duplicate indices");
+            }
+            seen_output[pos] = true;
+            output_positions[i].push_back(pos);
         }
-        call_args[i] = nb::steal<nb::tuple>(combined);
+        std::vector<bool> seen_input_output(call_args[i].size(), false);
+        input_output_positions[i].reserve(input_output_positions_tuple.size());
+        for (int j = 0; j < input_output_positions_tuple.size(); j++) {
+            std::size_t pos = nb::cast<std::size_t>(input_output_positions_tuple[j]);
+            if (pos >= static_cast<std::size_t>(call_args[i].size())) {
+                throw std::runtime_error("input_output_positions contains an index outside the args tuple");
+            }
+            if (!seen_output[pos]) {
+                throw std::runtime_error("input_output_positions must be a subset of output_positions");
+            }
+            if (seen_input_output[pos]) {
+                throw std::runtime_error("input_output_positions contains duplicate indices");
+            }
+            seen_input_output[pos] = true;
+            input_output_positions[i].push_back(pos);
+        }
     }
-    return std::make_tuple(std::move(call_args), std::move(outputs), std::move(expected));
+    return std::make_tuple(std::move(call_args), std::move(output_positions), std::move(input_output_positions), std::move(expected));
 }
 
 bool can_convert_to_tensor(nb::handle obj) {
     return nb::isinstance<nb_cuda_array>(obj);
 }
 
-auto BenchmarkManager::make_shadow_args(const nb::tuple& args, std::size_t first_input_idx, cudaStream_t stream) -> std::vector<std::optional<ShadowArgument>> {
+auto BenchmarkManager::make_shadow_args(const nb::tuple& args, const std::vector<std::size_t>& output_positions, const std::vector<std::size_t>& input_output_positions, cudaStream_t stream) -> std::vector<std::optional<ShadowArgument>> {
     std::vector<std::optional<ShadowArgument>> shadow_args(args.size());
-    int nargs = args.size();
+    std::vector<bool> is_output(args.size(), false);
+    for (auto pos : output_positions) {
+        is_output.at(pos) = true;
+    }
+    for (auto pos : input_output_positions) {
+        is_output.at(pos) = false;
+    }
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<unsigned> canary_seed_dist(0,  0xffffffff);
-    for (std::size_t i = first_input_idx; i < static_cast<std::size_t>(nargs); i++) {
+    for (std::size_t i = 0; i < static_cast<std::size_t>(args.size()); i++) {
+        if (is_output[i]) {
+            continue;
+        }
         if (can_convert_to_tensor(args[i])) {
             nb_cuda_array arr = nb::cast<nb_cuda_array>(args[i]);
             void* shadow;
@@ -306,35 +340,35 @@ BenchmarkManager::ShadowArgument& BenchmarkManager::ShadowArgument::operator=(Sh
 void BenchmarkManager::do_bench_py(
     const std::string& kernel_qualname,
     const std::vector<nb::tuple>& args,
-    const std::vector<nb::tuple>& output_tuples,
+    const std::vector<std::vector<std::size_t>>& output_positions,
+    const std::vector<std::vector<std::size_t>>& input_output_positions,
     const std::vector<nb::tuple>& expected,
     cudaStream_t stream
 ) {
     if (args.size() < 5) {
         throw std::runtime_error("Not enough test cases to run benchmark");
     }
-    if (output_tuples.size() != args.size() || expected.size() != args.size()) {
-        throw std::runtime_error("Expected results, outputs, and test case lists do not have the same length");
+    if (output_positions.size() != args.size() || input_output_positions.size() != args.size() || expected.size() != args.size()) {
+        throw std::runtime_error("Expected results, output metadata, and test case lists do not have the same length");
     }
     int calls = args.size() - 1;
 
     // extract relevant infos from outputs and expected
     std::vector<std::vector<nb_cuda_array>> outputs(args.size());
     for (int i = 0; i < args.size(); i++) {
-        const nb::tuple& output_tuple = output_tuples.at(i);
-        outputs.at(i).reserve(output_tuple.size());
-        for (int j = 0; j < output_tuple.size(); j++) {
-            outputs.at(i).push_back(nb::cast<nb_cuda_array>(output_tuple[j]));
+        outputs.at(i).reserve(output_positions.at(i).size());
+        for (auto pos : output_positions.at(i)) {
+            outputs.at(i).push_back(nb::cast<nb_cuda_array>(args.at(i)[pos]));
         }
     }
 
     // Generate "shadow" copies of input arguments
     std::vector<ShadowArgumentList> shadow_arguments;
     for (int i = 0; i < args.size(); i++) {
-        shadow_arguments.emplace_back(make_shadow_args(args.at(i), outputs.at(i).size(), stream));
+        shadow_arguments.emplace_back(make_shadow_args(args.at(i), output_positions.at(i), input_output_positions.at(i), stream));
     }
 
-    setup_expected_outputs(output_tuples, expected);
+    setup_expected_outputs(output_positions, expected);
 
     // clean up as much python state as we can
     trigger_gc();
@@ -356,9 +390,28 @@ void BenchmarkManager::do_bench_py(
     // after this, we cannot trust python anymore
     nb::callable kernel = kernel_from_qualname(kernel_qualname);
 
+    auto prepare_args = [&](const ShadowArgumentList& shadow_args) {
+        for (auto& shadow_arg : shadow_args) {
+            if (shadow_arg) {
+                CUDA_CHECK(cudaMemcpyAsync(shadow_arg->Original.data(), shadow_arg->Shadow, shadow_arg->Original.nbytes(), cudaMemcpyDeviceToDevice, stream));
+            }
+        }
+
+        clear_cache(stream);
+
+        // ok, now we revert the canaries. This _does_ bring in the corresponding cache lines,
+        // but they are very sparse (1/256), so that seems like an acceptable trade-off
+        for (auto& shadow_arg : shadow_args) {
+            if (shadow_arg) {
+                canaries(shadow_arg->Original.data(), shadow_arg->Original.nbytes(), shadow_arg->Seed, stream);
+            }
+        }
+    };
+
     // ok, first run for compilations etc
     nvtx_push("warmup");
     CUDA_CHECK(cudaDeviceSynchronize());
+    prepare_args(shadow_arguments.at(0));
     kernel(*args.at(0));
     CUDA_CHECK(cudaDeviceSynchronize());
     nvtx_pop();
@@ -372,7 +425,7 @@ void BenchmarkManager::do_bench_py(
         // note: we are assuming here that calling the kernel multiple times for the same input is a safe operation
         // this is only potentially problematic for in-place kernels;
         CUDA_CHECK(cudaDeviceSynchronize());
-        clear_cache(stream);
+        prepare_args(shadow_arguments.at(0));
         kernel(*args.at(0));
         CUDA_CHECK(cudaDeviceSynchronize());
         std::chrono::high_resolution_clock::time_point cpu_end = std::chrono::high_resolution_clock::now();
@@ -435,23 +488,9 @@ void BenchmarkManager::do_bench_py(
         // unfortunately, we need to do this before clearing the cache, so there is a window of opportunity
         // *but* we deliberately modify a small subset of the inputs, which only get corrected immediately before
         // the user code call.
-        for (auto& shadow_arg : shadow_arguments.at(test_id)) {
-            if (shadow_arg) {
-                CUDA_CHECK(cudaMemcpyAsync(shadow_arg->Original.data(), shadow_arg->Shadow, shadow_arg->Original.nbytes(), cudaMemcpyDeviceToDevice, stream));
-            }
-        }
-
         nvtx_push("cc");
-        clear_cache(stream);
+        prepare_args(shadow_arguments.at(test_id));
         nvtx_pop();
-
-        // ok, now we revert the canaries. This _does_ bring in the corresponding cache lines,
-        // but they are very sparse (1/256), so that seems like an acceptable trade-off
-        for (auto& shadow_arg : shadow_arguments.at(test_id)) {
-            if (shadow_arg) {
-                canaries(shadow_arg->Original.data(), shadow_arg->Original.nbytes(), shadow_arg->Seed, stream);
-            }
-        }
 
         CUDA_CHECK(cudaEventRecord(mStartEvents.at(i), stream));
         nvtx_push("kernel");
@@ -514,17 +553,16 @@ float BenchmarkManager::measure_event_overhead(int repeats, cudaStream_t stream)
     return median;
 }
 
-void BenchmarkManager::setup_expected_outputs(const std::vector<nb::tuple>& outputs, const std::vector<nb::tuple>& expected) {
+void BenchmarkManager::setup_expected_outputs(const std::vector<std::vector<std::size_t>>& output_positions, const std::vector<nb::tuple>& expected) {
     for (auto& expected_per_test : mExpectedOutputs) {
         for (auto& exp : expected_per_test) cudaFree(exp.Value);
     }
     mExpectedOutputs.clear();
-    mExpectedOutputs.resize(outputs.size());
-    for (int i = 0; i < outputs.size(); i++) {
-        const nb::tuple& output_tuple = outputs.at(i);
+    mExpectedOutputs.resize(output_positions.size());
+    for (int i = 0; i < output_positions.size(); i++) {
         const nb::tuple& expected_tuple = expected.at(i);
-        if (expected_tuple.size() != output_tuple.size()) {
-            throw std::runtime_error("Expected tuple size must match outputs tuple size");
+        if (expected_tuple.size() != output_positions.at(i).size()) {
+            throw std::runtime_error("Expected tuple size must match output_positions tuple size");
         }
         mExpectedOutputs.at(i).reserve(expected_tuple.size());
         for (int j = 0; j < expected_tuple.size(); j++) {

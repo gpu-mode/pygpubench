@@ -1,5 +1,3 @@
-import functools
-
 import pygpubench
 import torch
 
@@ -37,23 +35,17 @@ def generate_test_case(**kwargs):
     expected_gray = torch.empty_like(y_gray)
     expected_red = torch.empty_like(y_red)
     reference_kernel((expected_gray, expected_red, x))
-    # Mixed expected spec styles:
-    # - gray output: approximate match
-    # - red output: exact match
-    return (x,), (y_gray, y_red), ((expected_gray, 1e-6, 1e-6), expected_red)
-
-
-def kernel_generator(kernel):
-    import submission_multi
-    return getattr(submission_multi, kernel)
-
-
+    return (
+        pygpubench.out(y_gray, expected=(expected_gray, 1e-6, 1e-6)),
+        pygpubench.out(y_red, expected=expected_red),
+        x,
+    )
 if __name__ == "__main__":
     kernels = ["valid_custom_kernel_eager", "valid_custom_kernel_compiled", "valid_custom_kernel_stream"]
     for kernel in kernels:
         print(kernel)
         res = pygpubench.do_bench_isolated(
-            functools.partial(kernel_generator, kernel),
+            f"submission_multi.{kernel}",
             generate_test_case,
             {"size": 1024},
             100,
@@ -66,7 +58,7 @@ if __name__ == "__main__":
     for kernel in broken:
         print(kernel)
         res = pygpubench.do_bench_isolated(
-            functools.partial(kernel_generator, kernel),
+            f"submission_multi.{kernel}",
             generate_test_case,
             {"size": 1024},
             100,

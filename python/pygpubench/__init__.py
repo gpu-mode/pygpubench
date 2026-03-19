@@ -16,16 +16,52 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "BenchmarkCase",
     "do_bench_isolated",
     "basic_stats",
     "BenchmarkResult",
     "BenchmarkStats",
     "DeterministicContext",
     "KernelFunction",
+    "OutputArg",
     "TestGeneratorInterface",
     "ExpectedSpec",
     "ExpectedResult",
+    "out",
 ]
+
+
+def out(value, *, expected, uses_current_value=False):
+    """Mark a writable / checked kernel argument."""
+    return OutputArg(
+        value=value,
+        expected=expected,
+        uses_current_value=uses_current_value,
+    )
+
+
+def _normalize_test_case(case: BenchmarkCase) -> tuple[tuple, tuple[int, ...], tuple[int, ...], ExpectedResult]:
+    if not isinstance(case, tuple):
+        raise RuntimeError("generate_test_case must return a tuple of kernel arguments")
+
+    kernel_args = []
+    output_positions = []
+    input_output_positions = []
+    expected = []
+    for idx, arg in enumerate(case):
+        if isinstance(arg, OutputArg):
+            kernel_args.append(arg.value)
+            output_positions.append(idx)
+            if arg.uses_current_value:
+                input_output_positions.append(idx)
+            expected.append(arg.expected)
+        else:
+            kernel_args.append(arg)
+
+    if not output_positions:
+        raise RuntimeError("generate_test_case must include at least one pygpubench.out(...) argument")
+
+    return tuple(kernel_args), tuple(output_positions), tuple(input_output_positions), tuple(expected)
 
 
 def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "multiprocessing.connection.Connection", qualname: str, test_generator: TestGeneratorInterface,
@@ -36,8 +72,9 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
     :param out_fd: Writable file descriptor to which benchmark results are written.
     :param in_fd: Readable file descriptor that communicates benchmark configuration to the runner.
     :param qualname: Fully qualified name of the kernel object, e.g. ``my_package.my_module.kernel``.
-    :param test_generator: A function that takes the test arguments (including a seed) and returns a test case;
-    i.e., a tuple of (inputs, outputs, expected).
+    :param test_generator: A function that takes the test arguments (including a seed) and returns
+    kernel arguments in call order. Writable / checked args must be wrapped in `pygpubench.out(...)`.
+    If an output also depends on its initial contents, pass `uses_current_value=True`.
     :param test_args: keyword arguments to be passed to `test_generator`. Seed will be generated automatically.
     :param discard: If true, then cache lines are discarded as part of cache clearing before each benchmark run.
     :param nvtx: Whether to enable NVTX markers for the benchmark. Mostly useful for debugging.
@@ -49,13 +86,16 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
         import torch
         stream = torch.cuda.current_stream().cuda_stream
 
+    def normalized_test_generator(**kwargs):
+        return _normalize_test_case(test_generator(**kwargs))
+
     try:
         with DeterministicContext():
             _pygpubench.do_bench(
                 out_fd.fileno(),
                 in_fd.fileno(),
                 qualname,
-                test_generator,
+                normalized_test_generator,
                 test_args,
                 stream,
                 discard,
@@ -154,7 +194,11 @@ def do_bench_isolated(
         mseal = True,
 ) -> BenchmarkResult:
     """
-    Runs kernel benchmark (`do_bench_impl`) in a subprocess for proper isolation.
+    Runs a kernel benchmark in a subprocess for proper isolation.
+
+    `test_generator(...)` must return kernel arguments in call order.
+    Writable / checked arguments must be wrapped in `pygpubench.out(...)`.
+    If an output also depends on its initial contents, pass `uses_current_value=True`.
     """
     assert repeats > 1
 

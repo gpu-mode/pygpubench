@@ -1,10 +1,27 @@
-from typing import Callable, Tuple
+import dataclasses
+
+from typing import Any, Callable, Tuple
 
 Tensor = "torch.Tensor"
 ExpectedSpec = Tensor | Tuple[Tensor] | Tuple[Tensor, float, float]
 ExpectedResult = Tuple[ExpectedSpec, ...]
+BenchmarkCase = Tuple[Any, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class OutputArg:
+    value: Any
+    expected: ExpectedSpec
+    uses_current_value: bool = False
 
 KernelFunction = Callable[..., None]
-TestGeneratorInterface = Callable[..., Tuple[Tuple, Tuple, ExpectedResult]]
+TestGeneratorInterface = Callable[..., BenchmarkCase]
 
-__all__ = ["KernelFunction", "TestGeneratorInterface", "ExpectedSpec", "ExpectedResult"]
+__all__ = [
+    "BenchmarkCase",
+    "ExpectedResult",
+    "ExpectedSpec",
+    "KernelFunction",
+    "OutputArg",
+    "TestGeneratorInterface",
+]
