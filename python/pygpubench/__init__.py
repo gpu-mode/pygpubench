@@ -180,29 +180,31 @@ def do_bench_isolated(
 
     parent_tb_conn, child_tb_conn = ctx.Pipe(duplex=False)
 
-    process = ctx.Process(
-        target=_do_bench_impl,
-        args=(
-            result_child,
-            sig_r,
-            qualname,
-            test_generator,
-            test_args,
-            None,
-            discard,
-            nvtx,
-            child_tb_conn,
-            landlock,
-            mseal,
-        ),
-    )
+    with SeccompSupervisor() as supervisor:
+        process = ctx.Process(
+            target=_do_bench_impl,
+            args=(
+                result_child,
+                sig_r,
+                qualname,
+                test_generator,
+                test_args,
+                None,
+                discard,
+                nvtx,
+                child_tb_conn,
+                landlock,
+                mseal,
+                supervisor.tracee_sock,
+            ),
+        )
 
-    process.start()
-    child_tb_conn.close()
-    result_child.close()
-    sig_r.close()
+        process.start()
+        child_tb_conn.close()
+        result_child.close()
+        sig_r.close()
 
-    process.join(timeout=timeout)
+        process.join(timeout=timeout)
 
     if process.is_alive():
         process.kill()

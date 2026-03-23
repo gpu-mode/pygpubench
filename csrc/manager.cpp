@@ -121,7 +121,8 @@ BenchmarkParameters read_benchmark_parameters(int input_fd, void* signature_out)
     return {seed, static_cast<int>(repeats)};
 }
 
-BenchmarkManager::BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal) : mSignature(std::move(signature)) {
+BenchmarkManager::BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard,
+                                   bool nvtx, bool landlock, bool mseal, int supervisor_socket) : mSignature(std::move(signature)) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
