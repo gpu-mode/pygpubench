@@ -7,6 +7,7 @@
 #include <vector>
 #include <cstdint>
 #include <cerrno>
+#include <system_error>
 
 // Utility to help build up non-trivial bpf for checking address ranges of pointer arguments
 struct BpfBuilder {
@@ -139,6 +140,10 @@ void seccomp_protect_page_range(uintptr_t protected_page, size_t page_size) {
     b.ret_allow();
 
     auto prog = b.build();
-    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
-    syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog);
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        throw std::system_error(errno, std::generic_category(), "prctl(PR_SET_NO_NEW_PRIVS) failed");
+    }
+    if (syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) != 0) {
+        throw std::system_error(errno, std::generic_category(), "seccomp(SECCOMP_SET_MODE_FILTER) failed");
+    }
 }

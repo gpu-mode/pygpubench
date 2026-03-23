@@ -316,22 +316,32 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname) {
     std::uintptr_t hi = (reinterpret_cast<std::uintptr_t>(this) + sizeof(BenchmarkManager) + 4095) & ~4095;
 
     nb::callable kernel;
+    std::exception_ptr thread_exception;
     // make the BenchmarkManager inaccessible
     protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_NONE);
     // TODO make stack inaccessible (may be impossible) or read-only during the call
     // call the python kernel generation function from a different thread.
 
     std::thread make_kernel_thread([&]() {
-        // new thread, new seccomp.
-        seccomp_protect_page_range(lo, hi - lo);
-        nb::gil_scoped_acquire guard;
-        kernel = kernel_from_qualname(qualname);
+        try {
+            // new thread, new seccomp.
+            seccomp_protect_page_range(lo, hi - lo);
+            nb::gil_scoped_acquire guard;
+            kernel = kernel_from_qualname(qualname);
+        } catch (...) {
+                thread_exception = std::current_exception();
+        }
     });
 
     make_kernel_thread.join();
     // make it accessible again. This is in the original thread, so the tightened seccomp
     // policy does not apply here.
     protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE);
+
+    if (thread_exception) {
+        std::rethrow_exception(thread_exception);
+    }
+
     return kernel;
 }
 
