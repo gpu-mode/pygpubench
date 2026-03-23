@@ -10,6 +10,7 @@ from typing import Optional, TYPE_CHECKING
 from . import _pygpubench
 from ._types import *
 from .utils import DeterministicContext
+from .supervisor import SeccompSupervisor
 
 if TYPE_CHECKING:
     import multiprocessing.connection
@@ -29,7 +30,7 @@ __all__ = [
 
 def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "multiprocessing.connection.Connection", qualname: str, test_generator: TestGeneratorInterface,
                    test_args: dict, stream: int = None, discard: bool = True,
-                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True, mseal=True):
+                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True, mseal=True, supervisor_sock: "multiprocessing.connection.Connection" = None):
     """
     Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
     :param out_fd: Writable file descriptor to which benchmark results are written.
@@ -60,6 +61,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
                 nvtx,
                 landlock,
                 mseal,
+                supervisor_sock.fileno(),
             )
     except BaseException:
         if tb_conn is not None:
