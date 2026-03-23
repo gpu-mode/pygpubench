@@ -1,149 +1,106 @@
-#include <sys/prctl.h>
-#include <sys/syscall.h>
-#include <linux/seccomp.h>
-#include <linux/filter.h>
-#include <linux/audit.h>
-#include <unistd.h>
-#include <vector>
-#include <cstdint>
 #include <cerrno>
+#include <cstdint>
+#include <cstring>
 #include <system_error>
 
-// Utility to help build up non-trivial bpf for checking address ranges of pointer arguments
-struct BpfBuilder {
-    std::vector<sock_filter> Instructions;
+#include <sys/socket.h>
+#include <unistd.h>
+#include <seccomp.h>
 
-    // Raw append
-    void emit(sock_filter f) { Instructions.push_back(f); }
+static inline void check_seccomp(int rc, const char* what) {
+    if (rc < 0)
+        throw std::system_error(-rc, std::generic_category(), what);
+}
 
-    size_t size() const { return Instructions.size(); }
+// ---------------------------------------------------------------------------
+// Install a seccomp filter on the calling thread that sends all memory-range
+// syscalls to the supervisor via SCMP_ACT_NOTIFY.
+//
+// We notify on all six rather than trying to check arg[0] in BPF, because
+// the overlap check (does [addr, addr+size) intersect [lo, hi)?) requires
+// 64-bit addition of two runtime values which BPF cannot do.
+//
+// Returns the unotify fd.
+// ---------------------------------------------------------------------------
+static int install_memory_notify_filter() {
+    scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);
+    if (!ctx)
+        throw std::system_error(errno, std::system_category(), "seccomp_init");
 
-    // Reserve a jump slot, return its index so it can patched later with `patch_jf_to_here`
-    size_t emit_jump_placeholder(int comp, uint32_t k) {
-        size_t idx = Instructions.size();
-        Instructions.push_back(BPF_JUMP(BPF_JMP|comp|BPF_K, k, 0, 0));
-        return idx;
+    try {
+        // These are blocked unconditionally: mremap with MREMAP_FIXED moves
+        // mappings to a caller-chosen address (safe overlap check impossible),
+        // and remap_file_pages is deprecated with no legitimate JIT use.
+        for (int nr : {SCMP_SYS(mremap), SCMP_SYS(remap_file_pages)}) {
+            check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), nr, 0),
+                          "seccomp_rule_add(block)");
+        }
+
+        // These are forwarded to the supervisor for overlap checking.
+        for (int nr : {SCMP_SYS(mprotect), SCMP_SYS(mmap),
+                       SCMP_SYS(munmap),   SCMP_SYS(madvise)}) {
+            check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_NOTIFY, nr, 0),
+                          "seccomp_rule_add(notify)");
+        }
+
+        check_seccomp(seccomp_load(ctx), "seccomp_load");
+    } catch (...) {
+        seccomp_release(ctx);
+        throw;
     }
 
-    // Patch a previously reserved jump's jf to skip to current position.
-    void patch_jf_to_here(size_t idx) {
-        // jf is relative to the instruction *after* the jump
-        Instructions[idx].jf = (uint8_t)(Instructions.size() - idx - 1);
+    int unotify_fd = seccomp_notify_fd(ctx);
+    seccomp_release(ctx);
+
+    if (unotify_fd < 0)
+        throw std::system_error(errno, std::system_category(), "seccomp_notify_fd");
+
+    return unotify_fd;
+}
+
+// ---------------------------------------------------------------------------
+// Send the unotify fd + range to the supervisor over the socketpair.
+// ---------------------------------------------------------------------------
+
+struct RangeMsg { uintptr_t lo, hi; };
+
+static void send_unotify_fd(int sock, int unotify_fd, uintptr_t lo, uintptr_t hi) {
+    RangeMsg range = { lo, hi };
+    struct iovec iov = { &range, sizeof(range) };
+
+    union {
+        char buf[CMSG_SPACE(sizeof(int))];
+        struct cmsghdr align;
+    } cmsg_buf;
+    memset(cmsg_buf.buf, 0, sizeof(cmsg_buf.buf));
+
+    struct msghdr msg = {};
+    msg.msg_iov        = &iov;
+    msg.msg_iovlen     = 1;
+    msg.msg_control    = cmsg_buf.buf;
+    msg.msg_controllen = sizeof(cmsg_buf.buf);
+
+    struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
+    cmsg->cmsg_level = SOL_SOCKET;
+    cmsg->cmsg_type  = SCM_RIGHTS;
+    cmsg->cmsg_len   = CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(cmsg), &unotify_fd, sizeof(int));
+
+    if (sendmsg(sock, &msg, 0) < 0)
+        throw std::system_error(errno, std::system_category(), "sendmsg");
+}
+
+// ---------------------------------------------------------------------------
+// Public API: called from the inner (untrusted) thread.
+// ---------------------------------------------------------------------------
+
+void seccomp_install_memory_notify(int supervisor_sock, uintptr_t lo, uintptr_t hi) {
+    int unotify_fd = install_memory_notify_filter();
+    try {
+        send_unotify_fd(supervisor_sock, unotify_fd, lo, hi);
+    } catch (...) {
+        close(unotify_fd);
+        throw;
     }
-
-    void patch_jt_to_here(size_t idx) {
-        Instructions[idx].jt = (uint8_t)(Instructions.size() - idx - 1);
-    }
-
-    // Load a field from struct seccomp_data
-    void load(uint32_t offset) {
-        emit(BPF_STMT(BPF_LD|BPF_W|BPF_ABS, offset));
-    }
-
-    void ret(uint32_t val) {
-        emit(BPF_STMT(BPF_RET|BPF_K, val));
-    }
-
-    void ret_allow() { ret(SECCOMP_RET_ALLOW); }
-    void ret_kill()  { ret(SECCOMP_RET_KILL_PROCESS); }
-    void ret_errno(int e) { ret(SECCOMP_RET_ERRNO | (e & SECCOMP_RET_DATA)); }
-
-    // if (loaded_value == k) skip n instructions, else continue
-    void jeq_skip(uint32_t k, uint8_t skip) {
-        emit(BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, k, skip, 0));
-    }
-    // if (loaded_value > k) skip n, else continue
-    void jgt_skip(uint32_t k, uint8_t skip) {
-        emit(BPF_JUMP(BPF_JMP|BPF_JGT|BPF_K, k, skip, 0));
-    }
-    // if (loaded_value >= k) skip n, else continue
-    void jge_skip(uint32_t k, uint8_t skip) {
-        emit(BPF_JUMP(BPF_JMP|BPF_JGE|BPF_K, k, skip, 0));
-    }
-    // if (loaded_value != k) skip n, else continue
-    void jne_skip(uint32_t k, uint8_t skip) {
-        emit(BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, k, 0, skip));
-    }
-
-    // Emits instructions that return `on_match` if args[arg_idx] falls within
-    // [lo, hi), then fall through otherwise.
-    // Leaves the accumulator in an undefined state after.
-    void emit_u64_arg_in_range(int arg_idx, uintptr_t lo, uintptr_t hi,
-                               uint32_t on_match) {
-        uint32_t lo_hi = (uint32_t)(lo >> 32),  lo_lo = (uint32_t)lo;
-        uint32_t hi_hi = (uint32_t)(hi >> 32),  hi_lo = (uint32_t)hi;
-        uint32_t arg_off = offsetof(struct seccomp_data, args) + arg_idx * sizeof(uint64_t);
-
-        std::vector<size_t> not_in_range_jt; // JGT, JGE: true branch is not-in-range
-        std::vector<size_t> not_in_range_jf; // JEQ used as JNE, JGE used as JLT: false branch is not-in-range
-
-        // lower bound
-        load(arg_off + 4);
-        size_t jgt_lo = emit_jump_placeholder(BPF_JGT, lo_hi);
-        not_in_range_jf.push_back(emit_jump_placeholder(BPF_JEQ, lo_hi)); // jf fires when !=
-        load(arg_off);
-        not_in_range_jf.push_back(emit_jump_placeholder(BPF_JGE, lo_lo)); // jf fires when
-        patch_jt_to_here(jgt_lo);
-
-        // upper bound
-        load(arg_off + 4);
-        not_in_range_jt.push_back(emit_jump_placeholder(BPF_JGT, hi_hi));
-        size_t jeq_hi = emit_jump_placeholder(BPF_JEQ, hi_hi);
-        ret(on_match);
-        patch_jt_to_here(jeq_hi);
-        load(arg_off);
-        not_in_range_jt.push_back(emit_jump_placeholder(BPF_JGE, hi_lo));
-        ret(on_match);
-
-        for (size_t idx : not_in_range_jt) patch_jt_to_here(idx);
-        for (size_t idx : not_in_range_jf) patch_jf_to_here(idx);
-    }
-
-    // block a syscall if arg is in [lo, hi)
-    void block_syscall_if_arg_in_range(int syscall_nr, int arg_idx,
-                                       uintptr_t lo, uintptr_t hi) {
-        // Load nr; if not this syscall, skip the whole range check.
-        load(offsetof(struct seccomp_data, nr));
-        size_t skip_idx = emit_jump_placeholder(BPF_JEQ, syscall_nr);
-
-        emit_u64_arg_in_range(arg_idx, lo, hi, SECCOMP_RET_ERRNO | (EPERM & SECCOMP_RET_DATA));
-
-        patch_jf_to_here(skip_idx);
-    }
-
-    struct sock_fprog build() {
-        return { .len = (unsigned short)Instructions.size(), .filter = Instructions.data() };
-    }
-};
-
-// ── Public API ───────────────────────────────────────────────────────────────
-
-void seccomp_protect_page_range(uintptr_t protected_page, size_t page_size) {
-    BpfBuilder b;
-
-    // Reject wrong arch to prevent syscall number confusion attacks
-    b.load(offsetof(struct seccomp_data, arch));
-    b.jeq_skip(AUDIT_ARCH_X86_64, 1);
-    b.ret_kill();
-
-    uintptr_t lo = protected_page;
-    uintptr_t hi = protected_page + page_size;
-
-    // prevent messing with the protected page range
-    b.block_syscall_if_arg_in_range(__NR_mprotect,        0, lo, hi);
-    b.block_syscall_if_arg_in_range(__NR_mmap,            0, lo, hi);
-    b.block_syscall_if_arg_in_range(__NR_mremap,          0, lo, hi);
-    b.block_syscall_if_arg_in_range(__NR_munmap,          0, lo, hi);
-    b.block_syscall_if_arg_in_range(__NR_madvise,         0, lo, hi);
-    b.block_syscall_if_arg_in_range(__NR_remap_file_pages,0, lo, hi);
-
-    b.ret_allow();
-
-    auto prog = b.build();
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
-        throw std::system_error(errno, std::generic_category(), "prctl(PR_SET_NO_NEW_PRIVS) failed");
-    }
-    if (syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) != 0) {
-        throw std::system_error(errno, std::generic_category(), "seccomp(SECCOMP_SET_MODE_FILTER) failed");
-    }
+    close(unotify_fd);  // supervisor now owns it; we must not retain it
 }

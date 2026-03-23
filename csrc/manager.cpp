@@ -25,7 +25,7 @@ extern void install_landlock();
 extern bool mseal_supported();
 extern void seal_executable_mappings();
 extern void install_seccomp_filter();
-extern void seccomp_protect_page_range(uintptr_t protected_page, size_t page_size);
+extern void seccomp_install_memory_notify(int supervisor_sock, uintptr_t lo, uintptr_t hi);
 
 static void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
                                        const nb_cuda_array& received, float r_tol, float a_tol, unsigned seed, std::size_t n_bytes, cudaStream_t stream) {
@@ -122,7 +122,7 @@ BenchmarkParameters read_benchmark_parameters(int input_fd, void* signature_out)
 }
 
 BenchmarkManager::BenchmarkManager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard,
-                                   bool nvtx, bool landlock, bool mseal, int supervisor_socket) : mSignature(std::move(signature)) {
+                                   bool nvtx, bool landlock, bool mseal, int supervisor_socket) : mSignature(std::move(signature)), mSupervisorSock(supervisor_socket) {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaDeviceGetAttribute(&mL2CacheSize, cudaDevAttrL2CacheSize, device));
@@ -313,11 +313,13 @@ void protect_range(void* ptr, size_t size, int prot) {
 
 nb::callable BenchmarkManager::get_kernel(const std::string& qualname) {
     nb::gil_scoped_release release;
-    std::uintptr_t lo = reinterpret_cast<std::uintptr_t>(this) & ~4095;
-    std::uintptr_t hi = (reinterpret_cast<std::uintptr_t>(this) + sizeof(BenchmarkManager) + 4095) & ~4095;
+    const std::uintptr_t lo = reinterpret_cast<std::uintptr_t>(this) & ~4095;
+    const std::uintptr_t hi = (reinterpret_cast<std::uintptr_t>(this) + sizeof(BenchmarkManager) + 4095) & ~4095;
 
     nb::callable kernel;
     std::exception_ptr thread_exception;
+    int sock = mSupervisorSock;
+
     // make the BenchmarkManager inaccessible
     protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_NONE);
     // TODO make stack inaccessible (may be impossible) or read-only during the call
@@ -325,8 +327,11 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname) {
 
     std::thread make_kernel_thread([&]() {
         try {
-            // new thread, new seccomp.
-            seccomp_protect_page_range(lo, hi - lo);
+            if (sock >= 0) {
+                seccomp_install_memory_notify(sock, lo, hi);
+                close(sock);
+                sock = -1;
+            }
             nb::gil_scoped_acquire guard;
             kernel = kernel_from_qualname(qualname);
         } catch (...) {
@@ -338,6 +343,8 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname) {
     // make it accessible again. This is in the original thread, so the tightened seccomp
     // policy does not apply here.
     protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE);
+    // closed now, so set to -1
+    mSupervisorSock = -1;
 
     if (thread_exception) {
         std::rethrow_exception(thread_exception);

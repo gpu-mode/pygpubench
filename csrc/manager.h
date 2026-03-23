@@ -75,6 +75,7 @@ private:
     bool mDiscardCache = true;
     bool mLandlock = true;
     bool mSeal = true;
+    int mSupervisorSock = -1;
     std::uint64_t mSeed = -1;
     std::vector<Expected> mExpectedOutputs;
     std::vector<ShadowArgumentList> mShadowArguments;
