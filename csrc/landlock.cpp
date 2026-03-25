@@ -153,7 +153,7 @@ void mseal(void* addr, size_t len, std::string_view name) {
 // these cannot be sealed
 static const std::unordered_set<std::string> excluded_paths = {"[vdso]", "[vvar]", "[vsyscall]"};
 
-void seal_executable_mappings() {
+void seal_mappings() {
     std::ifstream maps("/proc/self/maps");
     if (!maps)
         throw std::runtime_error("Failed to open /proc/self/maps");
@@ -166,18 +166,23 @@ void seal_executable_mappings() {
         std::istringstream ss(line);
         std::string range, perms, offset, dev, inode, path;
         if (!(ss >> range >> perms >> offset >> dev >> inode)) continue;
-        ss >> path; // optional, may be empty
+        ss >> path;
 
-        if (perms.find('x') == std::string::npos) continue;
         if (excluded_paths.count(path)) continue;
+
+        bool is_exec     = perms.find('x') != std::string::npos;
+        bool is_writable = perms.find('w') != std::string::npos;
+        bool is_file_backed = !path.empty() && path[0] == '/';
+        // seal anything executable and any file-backed read-only memory (e.g. global offset table)
+        bool should_seal = is_exec || (!is_writable && is_file_backed);
+        if (!should_seal) continue;
 
         auto dash = range.find('-');
         if (dash == std::string::npos) continue;
 
-        uintptr_t start = std::stoull(range.substr(0, dash), nullptr, 16);
-        uintptr_t end   = std::stoull(range.substr(dash + 1), nullptr, 16);
+        const uintptr_t start = std::stoull(range.substr(0, dash), nullptr, 16);
+        const uintptr_t end   = std::stoull(range.substr(dash + 1), nullptr, 16);
         to_seal.push_back({start, end, line});
-        // fprintf(stdout, "%s\n", line.c_str());
     }
 
     for (auto& r : to_seal) {
