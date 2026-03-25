@@ -477,19 +477,19 @@ void BenchmarkManager::do_bench_py(
     mErrorCountShift = noise.at(offset);
 
     // dry run -- measure overhead of events
-    float median_event_time = measure_event_overhead(DRY_EVENTS, stream);
+    mMedianEventTime = measure_event_overhead(DRY_EVENTS, stream);
 
     // create a randomized order for running the tests
-    std::vector<int> test_order(actual_calls);
-    std::iota(test_order.begin(), test_order.end(), 1);
-    std::shuffle(test_order.begin(), test_order.end(), rng);
+    mTestOrder.resize(actual_calls);
+    std::iota(mTestOrder.begin(), mTestOrder.end(), 1);
+    std::shuffle(mTestOrder.begin(), mTestOrder.end(), rng);
 
     std::uniform_int_distribution<unsigned> check_seed_generator(0,  0xffffffff);
 
     nvtx_push("benchmark");
     // now do the real runs
     for (int i = 0; i < actual_calls; i++) {
-        int test_id = test_order.at(i);
+        int test_id = mTestOrder.at(i);
         // page-in real inputs. If the user kernel runs on the wrong stream, it's likely it won't see the correct inputs
         // unfortunately, we need to do this before clearing the cache, so there is a window of opportunity
         // *but* we deliberately modify a small subset of the inputs, which only get corrected immediately before
@@ -522,26 +522,29 @@ void BenchmarkManager::do_bench_py(
         validate_result(mExpectedOutputs.at(test_id), mOutputBuffers.at(test_id), check_seed_generator(rng), stream);
     }
     nvtx_pop();
+}
 
+void BenchmarkManager::send_report() {
     cudaEventSynchronize(mEndEvents.back());
     unsigned error_count;
     CUDA_CHECK(cudaMemcpy(&error_count, mDeviceErrorCounter, sizeof(unsigned), cudaMemcpyDeviceToHost));
     // subtract the nuisance shift that we applied to the counter
     error_count -= mErrorCountShift;
 
-    std::string message = build_result_message(test_order, error_count, median_event_time);
+    std::string message = build_result_message(mTestOrder, error_count, mMedianEventTime);
     message = encrypt_message(mSignature.data(), 32, message);
     fwrite(message.data(), 1, message.size(), mOutputPipe);
     fflush(mOutputPipe);
+}
 
-    // cleanup events
+void BenchmarkManager::clean_up() {
     for (auto& event : mStartEvents) CUDA_CHECK(cudaEventDestroy(event));
     for (auto& event : mEndEvents) CUDA_CHECK(cudaEventDestroy(event));
     mStartEvents.clear();
     mEndEvents.clear();
 }
 
-std::string BenchmarkManager::build_result_message(const std::vector<int>& test_order, unsigned error_count, float median_event_time) const {
+std::string BenchmarkManager::build_result_message(const std::pmr::vector<int>& test_order, unsigned error_count, float median_event_time) const {
     std::ostringstream oss;
 
     oss << "event-overhead\t" << median_event_time * 1000 << " µs\n";

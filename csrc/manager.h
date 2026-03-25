@@ -50,6 +50,8 @@ class BenchmarkManager {
 public:
     std::pair<std::vector<nb::tuple>, std::vector<nb::tuple>> setup_benchmark(const nb::callable& generate_test_case, const nb::dict& kwargs, int repeats);
     void do_bench_py(const std::string& kernel_qualname, const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
+    void send_report();
+    void clean_up();
 private:
     friend BenchmarkManagerPtr make_benchmark_manager(int result_fd, ObfuscatedHexDigest signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal, int supervisor_socket);
     friend BenchmarkManagerDeleter;
@@ -113,9 +115,12 @@ private:
     std::pmr::vector<Expected> mExpectedOutputs;
     std::pmr::vector<ShadowArgumentList> mShadowArguments;
     std::pmr::vector<nb_cuda_array> mOutputBuffers;
+    std::pmr::vector<int> mTestOrder;
 
     FILE* mOutputPipe = nullptr;
     ObfuscatedHexDigest mSignature;
+
+    float mMedianEventTime = -1.f;
 
     static ShadowArgumentList make_shadow_args(const nb::tuple& args, cudaStream_t stream,
                                                std::pmr::memory_resource* resource);
@@ -133,7 +138,7 @@ private:
     int run_warmup(nb::callable& kernel, const nb::tuple& args, cudaStream_t stream);
     nb::callable get_kernel(const std::string& qualname, const nb::tuple& call_args);
 
-    [[nodiscard]] std::string build_result_message(const std::vector<int>& test_order, unsigned error_count, float median_event_time) const;
+    [[nodiscard]] std::string build_result_message(const std::pmr::vector<int>& test_order, unsigned error_count, float median_event_time) const;
 
 
     // debug only: Any sort of test exploit that targets specific values of this class is going to be brittle,

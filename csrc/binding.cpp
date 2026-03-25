@@ -31,6 +31,8 @@ void do_bench(int result_fd, int input_fd, const std::string& kernel_qualname, c
         mgr->do_bench_py(kernel_qualname, args, expected, reinterpret_cast<cudaStream_t>(stream));
     });
     run_thread.join();
+    mgr->send_report();
+    mgr->clean_up();
 }
 
 
