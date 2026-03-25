@@ -133,6 +133,8 @@ private:
     int run_warmup(nb::callable& kernel, const nb::tuple& args, cudaStream_t stream);
     nb::callable get_kernel(const std::string& qualname, const nb::tuple& call_args);
 
+    [[nodiscard]] std::string build_result_message(const std::vector<int>& test_order, unsigned error_count, float median_event_time) const;
+
 
     // debug only: Any sort of test exploit that targets specific values of this class is going to be brittle,
     // because simple refactoring will break the exploit, even though it does not close the underlying vulnerability.

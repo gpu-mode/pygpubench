@@ -13,6 +13,7 @@
 #include <cerrno>
 #include <limits>
 #include <random>
+#include <sstream>
 #include <thread>
 #include <nvtx3/nvToolsExt.h>
 #include <nanobind/stl/string.h>
@@ -471,7 +472,6 @@ void BenchmarkManager::do_bench_py(
 
     // dry run -- measure overhead of events
     float median_event_time = measure_event_overhead(DRY_EVENTS, stream);
-    fprintf(mOutputPipe, "event-overhead\t%f µs\n", median_event_time * 1000);
 
     // create a randomized order for running the tests
     std::vector<int> test_order(actual_calls);
@@ -523,30 +523,8 @@ void BenchmarkManager::do_bench_py(
     // subtract the nuisance shift that we applied to the counter
     error_count -= mErrorCountShift;
 
-    #ifdef ENABLE_EXPLOIT_TARGET
-    if (mExploitCanary != 0xDEADBEEFCAFEBABE) {
-        fprintf(mOutputPipe, "error-count\t%u\n", 0);
-        for (int i = 0; i < actual_calls; i++) {
-            fprintf(mOutputPipe, "%d\t%f\n", test_order.at(i) - 1, 10.f);
-        }
-    } else {
-        fprintf(mOutputPipe, "error-count\t%u\n", 42424242);
-    }
-    #else
-    if (error_count > 0) {
-        fprintf(mOutputPipe, "error-count\t%u\n", error_count);
-    }
-
-    for (int i = 0; i < actual_calls; i++) {
-        float duration;
-        CUDA_CHECK(cudaEventElapsedTime(&duration, mStartEvents.at(i), mEndEvents.at(i)));
-        fprintf(mOutputPipe, "%d\t%f\n", test_order.at(i) - 1, duration * 1000);
-    }
-    #endif
-
-    fprintf(mOutputPipe, "signature\t");
-    fwrite(mSignature.data(), 1, 32, mOutputPipe);
-    fputc('\n', mOutputPipe);
+    std::string message = build_result_message(test_order, error_count, median_event_time);
+    fprintf(mOutputPipe, "%s", message.c_str());
     fflush(mOutputPipe);
 
     // cleanup events
@@ -554,6 +532,34 @@ void BenchmarkManager::do_bench_py(
     for (auto& event : mEndEvents) CUDA_CHECK(cudaEventDestroy(event));
     mStartEvents.clear();
     mEndEvents.clear();
+}
+
+std::string BenchmarkManager::build_result_message(const std::vector<int>& test_order, unsigned error_count, float median_event_time) const {
+    std::ostringstream oss;
+
+    oss << "event-overhead\t" << median_event_time * 1000 << " µs\n";
+
+#ifdef ENABLE_EXPLOIT_TARGET
+    if (mExploitCanary != 0xDEADBEEFCAFEBABE) {
+        oss << "error-count\t0\n";
+        for (int i : test_order) {
+            oss << (i - 1) << "\t10.000000\n";
+        }
+    } else {
+        oss << "error-count\t42424242\n";
+    }
+#else
+    if (error_count > 0) {
+        oss << "error-count\t" << error_count << "\n";
+    }
+    for (int i = 0; i < test_order.size(); i++) {
+        float duration;
+        CUDA_CHECK(cudaEventElapsedTime(&duration, mStartEvents.at(i), mEndEvents.at(i)));
+        oss << (test_order.at(i) - 1) << "\t" << (duration * 1000.f) << "\n";
+    }
+#endif
+
+    return oss.str();
 }
 
 void BenchmarkManager::setup_test_cases( const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream) {
