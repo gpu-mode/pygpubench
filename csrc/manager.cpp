@@ -446,20 +446,24 @@ void BenchmarkManager::do_bench_py(
     setup_test_cases(args, expected, stream);
     install_protections();
 
-    // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
-    // after this, we cannot trust python anymore
-    nb::callable kernel = get_kernel(kernel_qualname, args.at(0));
-
-    // now, run a few more times for warmup; in total aim for 1 second of warmup runs
-    int actual_calls = run_warmup(kernel, args.at(0), stream);
-    constexpr int DRY_EVENTS = 100;
-    const int num_events = std::max(actual_calls, DRY_EVENTS);
+    constexpr std::size_t DRY_EVENTS = 100;
+    const std::size_t num_events = std::max(mShadowArguments.size(), DRY_EVENTS);
     mStartEvents.resize(num_events);
     mEndEvents.resize(num_events);
     for (int i = 0; i < num_events; i++) {
         CUDA_CHECK(cudaEventCreate(&mStartEvents.at(i)));
         CUDA_CHECK(cudaEventCreate(&mEndEvents.at(i)));
     }
+
+    // dry run -- measure overhead of events
+    mMedianEventTime = measure_event_overhead(DRY_EVENTS, stream);
+
+    // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
+    // after this, we cannot trust python anymore
+    nb::callable kernel = get_kernel(kernel_qualname, args.at(0));
+
+    // now, run a few more times for warmup; in total aim for 1 second of warmup runs
+    int actual_calls = run_warmup(kernel, args.at(0), stream);
 
     // pick a random spot for the unsigned
     // initialize the whole area with random junk; the error counter
@@ -476,9 +480,6 @@ void BenchmarkManager::do_bench_py(
     mDeviceErrorCounter = mDeviceErrorBase + offset;
     mErrorCountShift = noise.at(offset);
 
-    // dry run -- measure overhead of events
-    mMedianEventTime = measure_event_overhead(DRY_EVENTS, stream);
-
     // create a randomized order for running the tests
     mTestOrder.resize(actual_calls);
     std::iota(mTestOrder.begin(), mTestOrder.end(), 1);
@@ -489,7 +490,7 @@ void BenchmarkManager::do_bench_py(
     nvtx_push("benchmark");
     // now do the real runs
     for (int i = 0; i < actual_calls; i++) {
-        int test_id = mTestOrder.at(i);
+        const int test_id = mTestOrder.at(i);
         // page-in real inputs. If the user kernel runs on the wrong stream, it's likely it won't see the correct inputs
         // unfortunately, we need to do this before clearing the cache, so there is a window of opportunity
         // *but* we deliberately modify a small subset of the inputs, which only get corrected immediately before
