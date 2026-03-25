@@ -40,7 +40,8 @@ nanobind_add_module(_pygpubench
 )
 target_link_libraries(_pygpubench PUBLIC Python::Module CUDA::cudart PkgConfig::LIBSECCOMP OpenSSL::Crypto)
 # set a bunch of hardening options to make it harder to tamper with the executable
-target_compile_options(_pygpubench PUBLIC -fPIC -pie -fstack-protector-strong -fcf-protection=full -ftrivial-auto-var-init=zero -Wl,-z,relro,-z,now )
+target_compile_options(_pygpubench PUBLIC -fPIC -pie -fstack-protector-strong -fcf-protection=full -ftrivial-auto-var-init=zero )
+target_link_options(_pygpubench PUBLIC -Wl,-z,relro,-z,now)
 target_compile_definitions(_pygpubench PUBLIC -D_GLIBCXX_ASSERTIONS -D_FORTIFY_SOURCE=3)
 
 if(ENABLE_EXPLOIT_TARGET)
