@@ -9,7 +9,7 @@ from typing import Optional, TYPE_CHECKING
 
 from . import _pygpubench
 from ._types import *
-from .utils import DeterministicContext
+from .utils import DeterministicContext, decrypt_benchmark_result
 from .supervisor import SeccompSupervisor
 
 if TYPE_CHECKING:
@@ -135,11 +135,11 @@ def basic_stats(time_us: list[float]) -> BenchmarkStats:
     return BenchmarkStats(runs, len(time_us), fastest, slowest, median, mean, std, err)
 
 
-def read_all(fd: int) -> str:
+def read_all(fd: int) -> bytes:
     chunks = []
     while chunk := os.read(fd, 65536):
         chunks.append(chunk)
-    return (b"".join(chunks)).decode()
+    return b"".join(chunks)
 
 
 def do_bench_isolated(
@@ -233,12 +233,11 @@ def do_bench_isolated(
         raise RuntimeError(msg)
 
     # Child has exited and closed its write-end, so this read is bounded.
-    response = read_all(read_fd)
+    response = decrypt_benchmark_result(read_all(read_fd), key=signature.encode("ascii"))
     result_parent.close()
     parent_tb_conn.close()
 
     results = BenchmarkResult(None, [-1] * repeats, None, False)
-    has_signature = False
     for line in response.splitlines():
         line = line.strip()
         if len(line) == 0:
@@ -246,8 +245,6 @@ def do_bench_isolated(
         parts = line.split('\t')
         if len(parts) != 2:
             raise RuntimeError(f"Invalid benchmark output: {line}")
-        if has_signature:
-            raise RuntimeError(f"Unexpected output after signature: {line}")
 
         if parts[0].isdigit():
             iteration = int(parts[0])
@@ -261,12 +258,6 @@ def do_bench_isolated(
             if results.errors is not None:
                 raise RuntimeError(f"Duplicate error count in benchmark output")
             results.errors = int(parts[1])
-        elif parts[0] == "signature":
-            if signature != parts[1]:
-                raise RuntimeError("Benchmark subprocess output failed authentication: invalid signature")
-            has_signature = True
-    if not has_signature:
-        raise RuntimeError(f"No signature found in output")
 
     results.full = all((t > 0 for t in results.time_us))
     return results

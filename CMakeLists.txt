@@ -13,6 +13,7 @@ option(ENABLE_EXPLOIT_TARGET "Enable exploit canary for testing" OFF)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBSECCOMP REQUIRED IMPORTED_TARGET libseccomp)
+find_package(OpenSSL REQUIRED)
 
 FetchContent_Declare(
         nanobind
@@ -37,7 +38,7 @@ nanobind_add_module(_pygpubench
         csrc/seccomp.cpp
         csrc/supervisor.cpp
 )
-target_link_libraries(_pygpubench PUBLIC Python::Module CUDA::cudart PkgConfig::LIBSECCOMP)
+target_link_libraries(_pygpubench PUBLIC Python::Module CUDA::cudart PkgConfig::LIBSECCOMP OpenSSL::Crypto)
 # set a bunch of hardening options to make it harder to tamper with the executable
 target_compile_options(_pygpubench PUBLIC -fPIC -pie -fstack-protector-strong -fcf-protection=full -ftrivial-auto-var-init=zero -Wl,-z,relro,-z,now )
 target_compile_definitions(_pygpubench PUBLIC -D_GLIBCXX_ASSERTIONS -D_FORTIFY_SOURCE=3)

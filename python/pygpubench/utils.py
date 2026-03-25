@@ -1,4 +1,6 @@
 import os
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 
 class DeterministicContext:
     def __init__(self):
@@ -22,3 +24,22 @@ class DeterministicContext:
         torch.backends.cudnn.deterministic = self.deterministic
         torch.use_deterministic_algorithms(False)
         os.environ['CUBLAS_WORKSPACE_CONFIG'] = self.cublas
+
+
+def decrypt_benchmark_result(data: bytes, key: bytes) -> str:
+    NONCE_LEN = 12
+    TAG_LEN   = 16
+
+    if len(data) < NONCE_LEN + TAG_LEN:
+        raise ValueError("Invalid benchmark result: too short")
+
+    nonce      = data[:NONCE_LEN]
+    tag        = data[NONCE_LEN:NONCE_LEN + TAG_LEN]
+    ciphertext = data[NONCE_LEN + TAG_LEN:]
+
+    aesgcm    = AESGCM(key)
+    try:
+        plaintext = aesgcm.decrypt(nonce, ciphertext + tag, None)
+    except Exception as E:
+        raise RuntimeError("Could not decrypt benchmark result: Have they been tampered with?") from E
+    return plaintext.decode("utf-8")

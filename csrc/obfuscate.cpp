@@ -8,11 +8,15 @@
 #include <cstring>
 #include <random>
 #include <string_view>
+#include <vector>
 #include <stdexcept>
 #include <system_error>
 #include <utility>
 #include <cerrno>
 #include <cstdio>
+
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 constexpr std::size_t PAGE_SIZE = 4096;
 
@@ -104,4 +108,64 @@ std::uintptr_t slow_unhash(std::uintptr_t p, int rounds) {
         p ^= p >> 17 ^ p >> 34 ^ p >> 51;
     }
     return p;
+}
+
+std::string encrypt_message(void* key, size_t keyLen, const std::string& plaintext)
+{
+    if (keyLen != 32)
+        throw std::invalid_argument("encrypt_message: key must be exactly 32 bytes for AES-256");
+
+    struct Cleanse
+    {
+        void* key;
+        size_t keyLen;
+        ~Cleanse() {
+            OPENSSL_cleanse(key, keyLen);
+        }
+    } cleanse_guard{key, keyLen};
+
+    constexpr int NONCE_LEN = 12;
+    constexpr int TAG_LEN   = 16;
+
+    unsigned char nonce[NONCE_LEN];
+    if (RAND_bytes(nonce, NONCE_LEN) != 1)
+        throw std::runtime_error("encrypt_message: RAND_bytes failed");
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        throw std::runtime_error("encrypt_message: EVP_CIPHER_CTX_new failed");
+    struct CtxGuard { EVP_CIPHER_CTX* c; ~CtxGuard() { EVP_CIPHER_CTX_free(c); } } guard{ctx};
+
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), nullptr, nullptr, nullptr) != 1 ||
+        EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_IVLEN, NONCE_LEN, nullptr)  != 1 ||
+        EVP_EncryptInit_ex(ctx, nullptr, nullptr,
+                           static_cast<const unsigned char*>(key), nonce)      != 1)
+    {
+        throw std::runtime_error("encrypt_message: GCM init failed");
+    }
+
+    std::vector<unsigned char> ciphertext(plaintext.size());
+    int out_len = 0;
+    if (EVP_EncryptUpdate(ctx, ciphertext.data(), &out_len,
+                          reinterpret_cast<const unsigned char*>(plaintext.data()),
+                          static_cast<int>(plaintext.size())) != 1)
+    {
+        throw std::runtime_error("encrypt_message: EVP_EncryptUpdate failed");
+    }
+
+    int final_len = 0;
+    if (EVP_EncryptFinal_ex(ctx, ciphertext.data() + out_len, &final_len) != 1)
+        throw std::runtime_error("encrypt_message: EVP_EncryptFinal_ex failed");
+
+    unsigned char tag[TAG_LEN];
+    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_LEN, tag) != 1)
+        throw std::runtime_error("encrypt_message: GCM get tag failed");
+
+    std::string packet;
+    packet.reserve(NONCE_LEN + TAG_LEN + plaintext.size());
+    packet.append(reinterpret_cast<char*>(nonce),             NONCE_LEN);
+    packet.append(reinterpret_cast<char*>(tag),               TAG_LEN);
+    packet.append(reinterpret_cast<char*>(ciphertext.data()), out_len + final_len);
+
+    return packet;
 }

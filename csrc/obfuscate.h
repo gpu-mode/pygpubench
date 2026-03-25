@@ -5,7 +5,7 @@
 #ifndef PYGPUBENCH_OBFUSCATE_H
 #define PYGPUBENCH_OBFUSCATE_H
 
-#include <string_view>
+#include <string>
 #include <random>
 
 // A single memory page that can be read-protected.
@@ -52,5 +52,10 @@ template<class T>
 std::uintptr_t slow_hash(T* ptr, int rounds = 100'000) {
     return slow_hash(reinterpret_cast<std::uintptr_t>(ptr), rounds);
 }
+
+// Encrypts `plaintext` with AES-256-GCM using `key` (must be exactly 32 bytes).
+// Returns a binary packet: [nonce (12)] [tag (16)] [ciphertext (N)].
+// key will be cleansed after use
+std::string encrypt_message(void* key, size_t keyLen, const std::string& plaintext);
 
 #endif //PYGPUBENCH_OBFUSCATE_H

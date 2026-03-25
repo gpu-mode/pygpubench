@@ -524,7 +524,8 @@ void BenchmarkManager::do_bench_py(
     error_count -= mErrorCountShift;
 
     std::string message = build_result_message(test_order, error_count, median_event_time);
-    fprintf(mOutputPipe, "%s", message.c_str());
+    message = encrypt_message(mSignature.data(), 32, message);
+    fwrite(message.data(), 1, message.size(), mOutputPipe);
     fflush(mOutputPipe);
 
     // cleanup events

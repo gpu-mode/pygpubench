@@ -9,6 +9,7 @@ authors = [
     { name = "Erik Schultheis", email = "erik.schultheis@ist.ac.at" }
 ]
 dependencies = [
+    "cryptography"
 ]
 
 classifiers = [
