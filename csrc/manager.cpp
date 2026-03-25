@@ -385,6 +385,7 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname, const nb:
     nb::callable kernel;
     std::exception_ptr thread_exception;
     int sock = mSupervisorSock;
+    bool mseal = mSeal;
 
     nvtx_push("trigger-compile");
 
@@ -393,11 +394,13 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname, const nb:
     // TODO make stack inaccessible (may be impossible) or read-only during the call
     // call the python kernel generation function from a different thread.
 
-    std::thread make_kernel_thread([&kernel, sock, lo, hi, qualname, &call_args, &thread_exception]() {
+    std::thread make_kernel_thread([&kernel, sock, lo, hi, qualname, &call_args, &thread_exception, mseal]() {
         try {
             if (sock >= 0) {
                 try {
-                    seccomp_install_memory_notify(sock, lo, hi);
+                    // only install specific mprotect'ions when mseal is enabled.
+                    if (mseal)
+                        seccomp_install_memory_notify(sock, lo, hi);
                 } catch (...) {
                     close(sock);
                     throw;
