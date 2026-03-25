@@ -348,81 +348,86 @@ void protect_range(void* ptr, size_t size, int prot) {
         throw std::system_error(errno, std::system_category(), "mprotect");
 }
 
-nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const std::string& qualname, const nb::tuple& call_args, cudaStream_t stream) {
-    nb::gil_scoped_release release;
-    const std::uintptr_t lo = reinterpret_cast<std::uintptr_t>(this->mArena);
+static void setup_seccomp(int sock, bool install_notify, std::uintptr_t lo, std::uintptr_t hi) {
+    if (sock < 0)
+        return;
+    try {
+        if (install_notify)
+            seccomp_install_memory_notify(sock, lo, hi);
+    } catch (...) {
+        close(sock);
+        throw;
+    }
+    close(sock);
+}
+
+static double run_warmup_loop(nb::callable& kernel, const nb::tuple& args, cudaStream_t stream,
+                              void* cc_memory, std::size_t l2_clear_size, bool discard_cache,
+                              double warmup_seconds) {
+    CUDA_CHECK(cudaDeviceSynchronize());
+    auto cpu_start = std::chrono::high_resolution_clock::now();
+    int run_count = 0;
+
+    while (true) {
+        ::clear_cache(cc_memory, 2 * l2_clear_size, discard_cache, stream);
+        kernel(*args);
+        CUDA_CHECK(cudaDeviceSynchronize());
+
+        ++run_count;
+        double elapsed = std::chrono::duration<double>(
+            std::chrono::high_resolution_clock::now() - cpu_start).count();
+        if (elapsed > warmup_seconds)
+            return elapsed / run_count;
+    }
+}
+
+nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const std::string& qualname,
+                                                     const nb::tuple& call_args, cudaStream_t stream) {
+    const std::uintptr_t lo = reinterpret_cast<std::uintptr_t>(mArena);
     const std::uintptr_t hi = lo + BenchmarkManagerArenaSize;
 
+    // snapshot all member state needed in the thread before protecting the arena
+    const int sock = mSupervisorSock;
+    const bool install_notify = mSeal || supports_seccomp_notify();
+    const double warmup_seconds = mWarmupSeconds;
+    void* const cc_memory = mDeviceDummyMemory;
+    const std::size_t l2_clear_size = mL2CacheSize;
+    const bool discard_cache = mDiscardCache;
+
     nb::callable kernel;
-    double warmup_seconds = mWarmupSeconds;
-    void* cc_memory = mDeviceDummyMemory;
-    std::size_t l2_clear_size = mL2CacheSize;
-    bool discard_cache = mDiscardCache;
     std::exception_ptr thread_exception;
-    int sock = mSupervisorSock;
-    bool install_notify = mSeal || supports_seccomp_notify();
 
     nvtx_push("trigger-compile");
-
-    // make the BenchmarkManager inaccessible
     protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_NONE);
-    // TODO make stack inaccessible (may be impossible) or read-only during the call
-    // call the python kernel generation function from a different thread.
 
-    std::thread make_kernel_thread([&kernel, sock, lo, hi, qualname, &call_args, &thread_exception,
-                                      install_notify, &time_estimate, warmup_seconds, cc_memory, l2_clear_size, discard_cache, stream]() {
-        try {
-            if (sock >= 0) {
-                try {
-                    if (install_notify)
-                        seccomp_install_memory_notify(sock, lo, hi);
-                } catch (...) {
-                    close(sock);
-                    throw;
-                }
-                close(sock);
+    {
+        nb::gil_scoped_release release;
+        std::thread worker([&] {
+            try {
+                setup_seccomp(sock, install_notify, lo, hi);
+
+                nb::gil_scoped_acquire guard;
+
+                kernel = kernel_from_qualname(qualname);
+                CUDA_CHECK(cudaDeviceSynchronize());
+                kernel(*call_args);  // trigger JIT compile
+
+                time_estimate = run_warmup_loop(kernel, call_args, stream,
+                                                cc_memory, l2_clear_size, discard_cache,
+                                                warmup_seconds);
+            } catch (...) {
+                thread_exception = std::current_exception();
             }
-            nb::gil_scoped_acquire guard;
-            kernel = kernel_from_qualname(qualname);
+        });
+        worker.join();
+    }
 
-            // ok, first run for compilations etc
-            CUDA_CHECK(cudaDeviceSynchronize());
-            kernel(*call_args);
-            CUDA_CHECK(cudaDeviceSynchronize());
-
-            // warmup
-            CUDA_CHECK(cudaDeviceSynchronize());
-            auto cpu_start = std::chrono::high_resolution_clock::now();
-            int warmup_run_count = 0;
-
-            while (true) {
-                ::clear_cache(cc_memory, 2 * l2_clear_size, discard_cache, stream);
-               kernel(*call_args);
-               CUDA_CHECK(cudaDeviceSynchronize());
-
-               auto elapsed = std::chrono::high_resolution_clock::now() - cpu_start;
-               ++warmup_run_count;
-               if (std::chrono::duration<double>(elapsed).count() > warmup_seconds) {
-                   time_estimate = std::chrono::duration<double>(elapsed).count() / warmup_run_count;
-                   break;
-               }
-            }
-        } catch (...) {
-            thread_exception = std::current_exception();
-        }
-    });
-
-    make_kernel_thread.join();
-    // make it accessible again. This is in the original thread, so the tightened seccomp
-    // policy does not apply here.
     protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE);
-    // closed now, so set to -1
     mSupervisorSock = -1;
     nvtx_pop();
 
-    if (thread_exception) {
+    if (thread_exception)
         std::rethrow_exception(thread_exception);
-    }
 
     return kernel;
 }
