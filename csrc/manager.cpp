@@ -336,39 +336,6 @@ void BenchmarkManager::install_protections() {
     install_seccomp_filter();
 }
 
-int BenchmarkManager::run_warmup(nb::callable& kernel, const nb::tuple& args, cudaStream_t stream) {
-    std::chrono::high_resolution_clock::time_point cpu_start = std::chrono::high_resolution_clock::now();
-    int warmup_run_count = 0;
-    double time_estimate;
-    nvtx_push("timing");
-    while (true) {
-        // note: we are assuming here that calling the kernel multiple times for the same input is a safe operation
-        // this is only potentially problematic for in-place kernels;
-        CUDA_CHECK(cudaDeviceSynchronize());
-        clear_cache(stream);
-        kernel(*args);
-        CUDA_CHECK(cudaDeviceSynchronize());
-        std::chrono::high_resolution_clock::time_point cpu_end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> elapsed_seconds = cpu_end - cpu_start;
-        ++warmup_run_count;
-        if (elapsed_seconds.count() > mWarmupSeconds) {
-            time_estimate = elapsed_seconds.count() / warmup_run_count;
-            break;
-        }
-    }
-    nvtx_pop();
-
-    // note: this is a very conservative estimate. Timing above was measured with syncs between every kernel.
-    int calls = mOutputBuffers.size() - 1;
-    const int actual_calls = std::clamp(static_cast<int>(std::ceil(mBenchmarkSeconds / time_estimate)), 1, calls);
-
-    if (actual_calls < 3) {
-        throw std::runtime_error("The initial speed test indicated that running times are too slow to generate meaningful benchmark numbers: " + std::to_string(time_estimate));
-    }
-
-    return actual_calls;
-}
-
 static inline std::uintptr_t page_mask() {
     std::uintptr_t page_size = getpagesize();
     return ~(page_size - 1u);
@@ -381,12 +348,16 @@ void protect_range(void* ptr, size_t size, int prot) {
         throw std::system_error(errno, std::system_category(), "mprotect");
 }
 
-nb::callable BenchmarkManager::get_kernel(const std::string& qualname, const nb::tuple& call_args) {
+nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const std::string& qualname, const nb::tuple& call_args, cudaStream_t stream) {
     nb::gil_scoped_release release;
     const std::uintptr_t lo = reinterpret_cast<std::uintptr_t>(this->mArena);
     const std::uintptr_t hi = lo + BenchmarkManagerArenaSize;
 
     nb::callable kernel;
+    double warmup_seconds = mWarmupSeconds;
+    void* cc_memory = mDeviceDummyMemory;
+    std::size_t l2_clear_size = mL2CacheSize;
+    bool discard_cache = mDiscardCache;
     std::exception_ptr thread_exception;
     int sock = mSupervisorSock;
     bool install_notify = mSeal || supports_seccomp_notify();
@@ -398,7 +369,8 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname, const nb:
     // TODO make stack inaccessible (may be impossible) or read-only during the call
     // call the python kernel generation function from a different thread.
 
-    std::thread make_kernel_thread([&kernel, sock, lo, hi, qualname, &call_args, &thread_exception, install_notify]() {
+    std::thread make_kernel_thread([&kernel, sock, lo, hi, qualname, &call_args, &thread_exception,
+                                      install_notify, &time_estimate, warmup_seconds, cc_memory, l2_clear_size, discard_cache, stream]() {
         try {
             if (sock >= 0) {
                 try {
@@ -417,6 +389,24 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname, const nb:
             CUDA_CHECK(cudaDeviceSynchronize());
             kernel(*call_args);
             CUDA_CHECK(cudaDeviceSynchronize());
+
+            // warmup
+            CUDA_CHECK(cudaDeviceSynchronize());
+            auto cpu_start = std::chrono::high_resolution_clock::now();
+            int warmup_run_count = 0;
+
+            while (true) {
+                ::clear_cache(cc_memory, 2 * l2_clear_size, discard_cache, stream);
+               kernel(*call_args);
+               CUDA_CHECK(cudaDeviceSynchronize());
+
+               auto elapsed = std::chrono::high_resolution_clock::now() - cpu_start;
+               ++warmup_run_count;
+               if (std::chrono::duration<double>(elapsed).count() > warmup_seconds) {
+                   time_estimate = std::chrono::duration<double>(elapsed).count() / warmup_run_count;
+                   break;
+               }
+            }
         } catch (...) {
             thread_exception = std::current_exception();
         }
@@ -458,12 +448,20 @@ void BenchmarkManager::do_bench_py(
     // dry run -- measure overhead of events
     mMedianEventTime = measure_event_overhead(DRY_EVENTS, stream);
 
+    double time_estimate = 0.0;
     // at this point, we call user code as we import the kernel (executing arbitrary top-level code)
     // after this, we cannot trust python anymore
-    nb::callable kernel = get_kernel(kernel_qualname, args.at(0));
+    nb::callable kernel = initial_kernel_setup(time_estimate, kernel_qualname, args.at(0), stream);
 
-    // now, run a few more times for warmup; in total aim for 1 second of warmup runs
-    int actual_calls = run_warmup(kernel, args.at(0), stream);
+    int calls = mOutputBuffers.size() - 1;
+    const int actual_calls = std::clamp(
+        static_cast<int>(std::ceil(mBenchmarkSeconds / time_estimate)), 1, calls);
+
+    if (actual_calls < 3) {
+        throw std::runtime_error(
+            "The initial speed test indicated that running times are too slow to generate "
+            "meaningful benchmark numbers: " + std::to_string(time_estimate));
+    }
 
     // pick a random spot for the unsigned
     // initialize the whole area with random junk; the error counter
