@@ -29,6 +29,7 @@ extern void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t
 extern void install_landlock();
 extern bool mseal_supported();
 extern void seal_mappings();
+extern bool supports_seccomp_notify();
 extern void install_seccomp_filter();
 extern void seccomp_install_memory_notify(int supervisor_sock, uintptr_t lo, uintptr_t hi);
 
@@ -324,7 +325,10 @@ void BenchmarkManager::install_protections() {
 
     if (mSeal) {
         if (!mseal_supported()) {
-            throw std::runtime_error("mseal=True but kernel does not support sealing executable mappings");
+            throw std::runtime_error("mseal=True but kernel does not support sealing memory mappings");
+        }
+        if (!supports_seccomp_notify()) {
+            throw std::runtime_error("mseal=True but kernel does not support seccomp notify, so we cannot enforce memory protection");
         }
         seal_mappings();
     }
@@ -385,7 +389,7 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname, const nb:
     nb::callable kernel;
     std::exception_ptr thread_exception;
     int sock = mSupervisorSock;
-    bool mseal = mSeal;
+    bool install_notify = mSeal || supports_seccomp_notify();
 
     nvtx_push("trigger-compile");
 
@@ -394,12 +398,11 @@ nb::callable BenchmarkManager::get_kernel(const std::string& qualname, const nb:
     // TODO make stack inaccessible (may be impossible) or read-only during the call
     // call the python kernel generation function from a different thread.
 
-    std::thread make_kernel_thread([&kernel, sock, lo, hi, qualname, &call_args, &thread_exception, mseal]() {
+    std::thread make_kernel_thread([&kernel, sock, lo, hi, qualname, &call_args, &thread_exception, install_notify]() {
         try {
             if (sock >= 0) {
                 try {
-                    // only install specific mprotect'ions when mseal is enabled.
-                    if (mseal)
+                    if (install_notify)
                         seccomp_install_memory_notify(sock, lo, hi);
                 } catch (...) {
                     close(sock);

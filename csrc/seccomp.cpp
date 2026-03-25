@@ -104,3 +104,8 @@ void seccomp_install_memory_notify(int supervisor_sock, uintptr_t lo, uintptr_t 
     }
     close(unotify_fd);  // supervisor now owns it; we must not retain it
 }
+
+
+bool supports_seccomp_notify() {
+    return seccomp_api_get() >= 5;
+}
