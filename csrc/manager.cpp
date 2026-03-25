@@ -28,7 +28,7 @@ static constexpr std::size_t BenchmarkManagerArenaSize = 128 * 1024 * 1024;
 extern void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
 extern void install_landlock();
 extern bool mseal_supported();
-extern void seal_executable_mappings();
+extern void seal_mappings();
 extern void install_seccomp_filter();
 extern void seccomp_install_memory_notify(int supervisor_sock, uintptr_t lo, uintptr_t hi);
 
@@ -326,7 +326,7 @@ void BenchmarkManager::install_protections() {
         if (!mseal_supported()) {
             throw std::runtime_error("mseal=True but kernel does not support sealing executable mappings");
         }
-        seal_executable_mappings();
+        seal_mappings();
     }
 
     install_seccomp_filter();
