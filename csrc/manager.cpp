@@ -181,7 +181,8 @@ BenchmarkManager::BenchmarkManager(std::byte* arena, std::size_t arena_size,
       mEndEvents(&mResource),
       mExpectedOutputs(&mResource),
       mShadowArguments(&mResource),
-      mOutputBuffers(&mResource)
+      mOutputBuffers(&mResource),
+      mTestOrder(&mResource)
 {
     int device;
     CUDA_CHECK(cudaGetDevice(&device));
@@ -393,6 +394,8 @@ nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const
     void* const cc_memory = mDeviceDummyMemory;
     const std::size_t l2_clear_size = mL2CacheSize;
     const bool discard_cache = mDiscardCache;
+    int device;
+    CUDA_CHECK(cudaGetDevice(&device));
 
     nb::callable kernel;
     std::exception_ptr thread_exception;
@@ -404,6 +407,7 @@ nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const
         nb::gil_scoped_release release;
         std::thread worker([&] {
             try {
+                CUDA_CHECK(cudaSetDevice(device));
                 setup_seccomp(sock, install_notify, lo, hi);
 
                 nb::gil_scoped_acquire guard;
@@ -529,7 +533,7 @@ void BenchmarkManager::do_bench_py(
 }
 
 void BenchmarkManager::send_report() {
-    cudaEventSynchronize(mEndEvents.back());
+    CUDA_CHECK(cudaEventSynchronize(mEndEvents.at(mTestOrder.size() - 1)));
     unsigned error_count;
     CUDA_CHECK(cudaMemcpy(&error_count, mDeviceErrorCounter, sizeof(unsigned), cudaMemcpyDeviceToHost));
     // subtract the nuisance shift that we applied to the counter
