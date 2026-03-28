@@ -66,20 +66,25 @@ void ObfuscatedHexDigest::allocate(std::size_t size, std::mt19937& rng) {
     if (size > PAGE_SIZE / 2) {
         throw std::runtime_error("target size too big");
     }
-    if (Len != 0 || Offset != 0) {
+    if (this->size() != 0) {
         throw std::runtime_error("already allocated");
     }
 
     fill_random_hex(page_ptr(), PAGE_SIZE, rng);
-    const std::size_t max_offset = PAGE_SIZE - size - 1;
-    std::uniform_int_distribution<std::size_t> offset_dist(0, max_offset);
+    const std::uintptr_t max_offset = PAGE_SIZE - size - 1;
+    std::uniform_int_distribution<std::uintptr_t> offset_dist(0, max_offset);
 
-    Offset = offset_dist(rng);
-    Len = size;
+    const std::uintptr_t offset = offset_dist(rng);
+    HashedOffset = slow_hash(offset);
+    HashedLen = slow_hash(size ^ offset);
 }
 
 char* ObfuscatedHexDigest::data() {
-    return reinterpret_cast<char*>(page_ptr()) + Offset;
+    return reinterpret_cast<char*>(page_ptr()) + slow_unhash(HashedOffset);
+}
+
+std::size_t ObfuscatedHexDigest::size() const {
+    return slow_unhash(HashedLen ^ slow_unhash(HashedOffset));
 }
 
 void fill_random_hex(void* target, std::size_t size, std::mt19937& rng) {

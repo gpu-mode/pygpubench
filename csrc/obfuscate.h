@@ -35,12 +35,11 @@ public:
 
     char* data();
 
-    [[nodiscard]] std::size_t size() const {
-        return Len;
-    }
+    [[nodiscard]] std::size_t size() const;
+
 private:
-    std::size_t Len = 0;
-    std::size_t Offset = 0;
+    std::uintptr_t HashedLen = 0;
+    std::uintptr_t HashedOffset = 0;
 };
 
 void fill_random_hex(void* target, std::size_t size, std::mt19937& rng);
