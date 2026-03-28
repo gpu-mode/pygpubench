@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <signal.h>
+#include <system_error>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/prctl.h>
@@ -108,6 +109,10 @@ static bool handle_notification(int unotify_fd, uintptr_t lo, uintptr_t hi) {
 // Entry point for the supervisor process.
 // sock_fd is the supervisor's end of the socketpair, passed directly from Python.
 int supervisor_main(int sock_fd) {
+    if (prctl(PR_SET_DUMPABLE, 0) < 0) {
+        throw std::system_error(errno, std::system_category(), "prctl(PR_SET_DUMPABLE)");
+    }
+
     // Die if our parent (the tracee process) dies.
     prctl(PR_SET_PDEATHSIG, SIGTERM);
 
