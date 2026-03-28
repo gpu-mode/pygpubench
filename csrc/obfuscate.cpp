@@ -42,16 +42,8 @@ void ObfuscatedHexDigest::allocate(std::size_t size, std::mt19937& rng) {
     HashedLen = slow_hash(size ^ offset);
 }
 
-void ObfuscatedHexDigest::lock() {
-    if (mprotect(reinterpret_cast<void*>(slow_unhash(HashedPagePtr)), PAGE_SIZE, PROT_NONE) != 0) {
-        throw std::system_error(errno, std::system_category(), "mprotect");
-    }
-}
-
-void ObfuscatedHexDigest::unlock() {
-    if (mprotect(reinterpret_cast<void*>(slow_unhash(HashedPagePtr)), PAGE_SIZE, PROT_READ) != 0) {
-        throw std::system_error(errno, std::system_category(), "mprotect");
-    }
+const void* ObfuscatedHexDigest::page_ptr() const {
+    return reinterpret_cast<const void*>(slow_unhash(HashedPagePtr));
 }
 
 char* ObfuscatedHexDigest::data() {

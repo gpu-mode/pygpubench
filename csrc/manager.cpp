@@ -19,6 +19,7 @@
 #include <nanobind/stl/string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "protect.h"
 
 static constexpr std::size_t ArenaSize = 2 * 1024 * 1024;
 
@@ -341,18 +342,6 @@ void BenchmarkManager::install_protections() {
     install_seccomp_filter();
 }
 
-static inline std::uintptr_t page_mask() {
-    std::uintptr_t page_size = getpagesize();
-    return ~(page_size - 1u);
-}
-
-void protect_range(void* ptr, size_t size, int prot) {
-    std::uintptr_t start = reinterpret_cast<std::uintptr_t>(ptr) & page_mask();
-    std::uintptr_t end   = (reinterpret_cast<std::uintptr_t>(ptr) + size + getpagesize() - 1) & page_mask();
-    if (mprotect(reinterpret_cast<void*>(start), end - start, prot) < 0)
-        throw std::system_error(errno, std::system_category(), "mprotect");
-}
-
 static void setup_seccomp(int sock, bool install_notify, std::uintptr_t lo, std::uintptr_t hi) {
     if (sock < 0)
         return;
@@ -405,7 +394,7 @@ nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const
     std::exception_ptr thread_exception;
 
     nvtx_push("trigger-compile");
-    protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_NONE);
+    PROTECT_RANGE(lo, hi-lo, PROT_NONE);
 
     {
         nb::gil_scoped_release release;
@@ -430,7 +419,7 @@ nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const
         worker.join();
     }
 
-    protect_range(reinterpret_cast<void*>(lo), hi - lo, PROT_READ | PROT_WRITE);
+    PROTECT_RANGE(lo, hi - lo, PROT_READ | PROT_WRITE);
     mSupervisorSock = -1;
     nvtx_pop();
 
@@ -501,8 +490,8 @@ void BenchmarkManager::do_bench_py(
 
     randomize_before_test(actual_calls, rng, stream);
     // from this point on, even the benchmark thread won't write to the arena anymore
-    protect_range(mArena, BenchmarkManagerArenaSize, PROT_READ);
-    mSignature.lock();  // also, make the key fully inaccessible
+    PROTECT_RANGE(mArena, BenchmarkManagerArenaSize, PROT_READ);
+    PROTECT_RANGE(mSignature.data(), 4096, PROT_READ);  // make the key fully inaccessible
 
     std::uniform_int_distribution<unsigned> check_seed_generator(0,  0xffffffff);
 
@@ -552,15 +541,15 @@ void BenchmarkManager::send_report() {
     error_count -= mErrorCountShift;
 
     std::string message = build_result_message(mTestOrder, error_count, mMedianEventTime);
-    mSignature.unlock();
+    PROTECT_RANGE(mSignature.data(), 4096, PROT_READ);
     message = encrypt_message(mSignature.data(), 32, message);
-    mSignature.lock();
+    PROTECT_RANGE(mSignature.data(), 4096, PROT_NONE);
     fwrite(message.data(), 1, message.size(), mOutputPipe);
     fflush(mOutputPipe);
 }
 
 void BenchmarkManager::clean_up() {
-    protect_range(mArena, BenchmarkManagerArenaSize, PROT_READ | PROT_WRITE);
+    PROTECT_RANGE(mArena, BenchmarkManagerArenaSize, PROT_READ | PROT_WRITE);
 
     for (auto& event : mStartEvents) CUDA_CHECK(cudaEventDestroy(event));
     for (auto& event : mEndEvents) CUDA_CHECK(cudaEventDestroy(event));

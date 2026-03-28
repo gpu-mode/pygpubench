@@ -16,9 +16,7 @@ public:
 
     void allocate(std::size_t size, std::mt19937& rng);
 
-    void lock();
-    void unlock();
-
+    const void* page_ptr() const;
     char* data();
 
     [[nodiscard]] std::size_t size() const;
