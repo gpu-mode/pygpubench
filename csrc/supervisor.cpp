@@ -10,6 +10,8 @@
 #include <sys/prctl.h>
 #include <linux/seccomp.h>
 #include <unistd.h>
+#include <syscall.h>
+
 #include "protocol.h"
 #include <sys/mman.h>
 
@@ -114,16 +116,20 @@ static bool handle_notification(int unotify_fd, const Config& cfg) {
                   && (addr + len >= addr);
     bool prot_safe = prot == PROT_NONE;
 
-    if (ip_ok || !contained || prot_safe) {
+    if (!contained) {
+        // touches other memory, this is fine
         resp.error = 0;
         resp.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
-        if (contained)
-            fprintf(stdout, "Allowed mprotect from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d\n", ip, addr, addr + len, prot);
+    } else if ((ip_ok || prot_safe) && req.data.nr == SYS_mprotect) {
+        // touches our memory, but either makes it PROT_NONE or is from a whitelisted instruction
+        resp.error = 0;
+        resp.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+        fprintf(stdout, "Allowed mprotect from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d\n",ip, addr, addr + len, prot);
     } else {
         fprintf(stderr,
-            "supervisor: DENIED mprotect from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d "
+            "supervisor: DENIED syscall %d from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d "
             "(ip_ok=%d contained=%d)\n",
-            ip, addr, addr + len, prot, ip_ok, contained);
+             req.data.nr, ip, addr, addr + len, prot, ip_ok, contained);
     }
 
     if (ioctl(unotify_fd, SECCOMP_IOCTL_NOTIF_SEND, &resp) < 0)
