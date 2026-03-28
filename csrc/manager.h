@@ -135,6 +135,7 @@ private:
     void setup_test_cases(const std::vector<nb::tuple>& args, const std::vector<nb::tuple>& expected, cudaStream_t stream);
 
     void install_protections();
+    void randomize_before_test(int num_calls, std::mt19937& rng, cudaStream_t stream);
     nb::callable initial_kernel_setup(double& time_estimate, const std::string& qualname, const nb::tuple& call_args, cudaStream_t stream);
 
     [[nodiscard]] std::string build_result_message(const std::pmr::vector<int>& test_order, unsigned error_count, float median_event_time) const;

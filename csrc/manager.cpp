@@ -436,6 +436,26 @@ nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const
     return kernel;
 }
 
+void BenchmarkManager::randomize_before_test(int num_calls, std::mt19937& rng, cudaStream_t stream) {
+    // pick a random spot for the unsigned
+    // initialize the whole area with random junk; the error counter
+    // will be shifted by the initial value, so just writing zero
+    // won't result in passing the tests.
+    std::uniform_int_distribution<std::ptrdiff_t> dist(0, ArenaSize / sizeof(unsigned) - 1);
+    std::uniform_int_distribution<unsigned> noise_generator(0, std::numeric_limits<unsigned>::max());
+    std::vector<unsigned> noise(ArenaSize / sizeof(unsigned));
+    std::generate(noise.begin(), noise.end(), [&]() -> unsigned { return noise_generator(rng); });
+    CUDA_CHECK(cudaMemcpyAsync(mDeviceErrorBase, noise.data(), noise.size() * sizeof(unsigned), cudaMemcpyHostToDevice,  stream));
+    std::ptrdiff_t offset = dist(rng);
+    mDeviceErrorCounter = mDeviceErrorBase + offset;
+    mErrorCountShift = noise.at(offset);
+
+    // create a randomized order for running the tests
+    mTestOrder.resize(num_calls);
+    std::iota(mTestOrder.begin(), mTestOrder.end(), 1);
+    std::shuffle(mTestOrder.begin(), mTestOrder.end(), rng);
+}
+
 void BenchmarkManager::do_bench_py(
         const std::string& kernel_qualname,
         const std::vector<nb::tuple>& args,
@@ -472,25 +492,12 @@ void BenchmarkManager::do_bench_py(
             "meaningful benchmark numbers: " + std::to_string(time_estimate));
     }
 
-    // pick a random spot for the unsigned
-    // initialize the whole area with random junk; the error counter
-    // will be shifted by the initial value, so just writing zero
-    // won't result in passing the tests.
     std::random_device rd;
     std::mt19937 rng(rd());
-    std::uniform_int_distribution<std::ptrdiff_t> dist(0, ArenaSize / sizeof(unsigned) - 1);
-    std::uniform_int_distribution<unsigned> noise_generator(0, std::numeric_limits<unsigned>::max());
-    std::vector<unsigned> noise(ArenaSize / sizeof(unsigned));
-    std::generate(noise.begin(), noise.end(), [&]() -> unsigned { return noise_generator(rng); });
-    CUDA_CHECK(cudaMemcpyAsync(mDeviceErrorBase, noise.data(), noise.size() * sizeof(unsigned), cudaMemcpyHostToDevice,  stream));
-    std::ptrdiff_t offset = dist(rng);
-    mDeviceErrorCounter = mDeviceErrorBase + offset;
-    mErrorCountShift = noise.at(offset);
 
-    // create a randomized order for running the tests
-    mTestOrder.resize(actual_calls);
-    std::iota(mTestOrder.begin(), mTestOrder.end(), 1);
-    std::shuffle(mTestOrder.begin(), mTestOrder.end(), rng);
+    randomize_before_test(actual_calls, rng, stream);
+    // from this point on, even the benchmark thread won't write to the arena anymore
+    protect_range(mArena, BenchmarkManagerArenaSize, PROT_READ);
 
     std::uniform_int_distribution<unsigned> check_seed_generator(0,  0xffffffff);
 
@@ -546,6 +553,8 @@ void BenchmarkManager::send_report() {
 }
 
 void BenchmarkManager::clean_up() {
+    protect_range(mArena, BenchmarkManagerArenaSize, PROT_READ | PROT_WRITE);
+
     for (auto& event : mStartEvents) CUDA_CHECK(cudaEventDestroy(event));
     for (auto& event : mEndEvents) CUDA_CHECK(cudaEventDestroy(event));
     mStartEvents.clear();
