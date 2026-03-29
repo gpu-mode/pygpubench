@@ -3,9 +3,12 @@
 //
 
 #pragma once
-#include <unistd.h>
-#include <sys/syscall.h>
+#include <cstdint>
+#include <cstddef>
 #include <system_error>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
 
 // Generates an inline mprotect syscall, rounding ptr..ptr+size out to page boundaries,
 // and registers the exact address of the syscall instruction in the linker section
@@ -18,6 +21,10 @@
 // Because numeric labels are reusable, each expansion of this macro gets its own
 // independent "1:" with no clashes, making it safe to use at multiple call sites.
 //
+// We need to insert to a writeable segment "aw", because the actual instruction
+// addresses might only be resolved during load time. The whitelist of locations
+// is sent to the supervisor process before any user code runs, so writability
+// does not compromise security.
 #define PROTECT_RANGE_MARKED(ptr, size, prot)                                 \
     do {                                                                      \
         const uintptr_t _page = static_cast<uintptr_t>(getpagesize());        \
@@ -80,5 +87,7 @@
         }                                                                     \
     } while(0)
 
-extern unsigned long __start___allowed_mprotect[];
-extern unsigned long __stop___allowed_mprotect[];
+extern "C" {
+    extern uintptr_t __start___allowed_mprotect[];  // NOLINT(bugprone-reserved-identifier)
+    extern uintptr_t __stop___allowed_mprotect[];   // NOLINT(bugprone-reserved-identifier)
+}

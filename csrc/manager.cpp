@@ -196,6 +196,10 @@ BenchmarkManager::BenchmarkManager(std::byte* arena, std::size_t arena_size,
         throw std::runtime_error("Could not open output pipe");
     }
 
+    if (signature.size() != 32) {
+        throw std::invalid_argument("Invalid signature length");
+    }
+
     mNVTXEnabled = nvtx;
     mLandlock = landlock;
     mSeal = mseal;
@@ -469,7 +473,7 @@ void BenchmarkManager::do_bench_py(
     randomize_before_test(actual_calls, rng, stream);
     // from this point on, even the benchmark thread won't write to the arena anymore
     PROTECT_RANGE(mArena, BenchmarkManagerArenaSize, PROT_READ);
-    PROTECT_RANGE(mSignature.data(), 4096, PROT_READ);  // make the key fully inaccessible
+    PROTECT_RANGE(mSignature.page_ptr(), 4096, PROT_NONE);  // make the key fully inaccessible
 
     std::uniform_int_distribution<unsigned> check_seed_generator(0,  0xffffffff);
 
@@ -519,9 +523,11 @@ void BenchmarkManager::send_report() {
     error_count -= mErrorCountShift;
 
     std::string message = build_result_message(mTestOrder, error_count, mMedianEventTime);
-    PROTECT_RANGE(mSignature.data(), 4096, PROT_READ);
+    PROTECT_RANGE(mSignature.page_ptr(), 4096, PROT_READ);
     message = encrypt_message(mSignature.data(), 32, message);
-    PROTECT_RANGE(mSignature.data(), 4096, PROT_NONE);
+    PROTECT_RANGE(mSignature.page_ptr(), 4096, PROT_WRITE);
+    cleanse(mSignature.data(), 32);
+    PROTECT_RANGE(mSignature.page_ptr(), 4096, PROT_NONE);
     fwrite(message.data(), 1, message.size(), mOutputPipe);
     fflush(mOutputPipe);
 }

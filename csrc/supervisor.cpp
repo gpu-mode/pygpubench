@@ -15,31 +15,49 @@
 #include "protocol.h"
 #include <sys/mman.h>
 
+#ifdef DEBUG_SUPERVISOR
+#define dbgprint(...) fprintf(stdout, __VA_ARGS__)
+#else
+#define dbgprint(...)
+#endif
+
 struct Config {
     uintptr_t sensitive_lo;
     uintptr_t sensitive_hi;
     std::vector<AllowedSite> allowed;
 };
 
+static void recv_all(int sock, void* buf, size_t len) {
+    auto* p = static_cast<char*>(buf);
+    while (len > 0) {
+        ssize_t n = recv(sock, p, len, MSG_WAITALL);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            throw std::system_error(errno, std::system_category(), "recv");
+        }
+        if (n == 0)
+            throw std::runtime_error("supervisor: connection closed unexpectedly");
+        p   += n;
+        len -= n;
+    }
+}
+
 static int recv_setup(int sock, Config& cfg) {
     SupervisorSetupMsg setup;
-    ssize_t n = recv(sock, &setup, sizeof(setup), MSG_WAITALL);
-    if (n != sizeof(setup)) {
-        fprintf(stderr, "supervisor: short read on SupervisorSetupMsg\n");
-        return -1;
-    }
+    recv_all(sock, &setup, sizeof(setup));
 
     cfg.sensitive_lo = setup.sensitive_lo;
     cfg.sensitive_hi = setup.sensitive_hi;
-    cfg.allowed.resize(setup.n_allowed_sites);
+    if (setup.n_allowed_sites > MAX_ALLOWED_SITES)
+        throw std::runtime_error("supervisor: too many allowed sites");
 
+    if (cfg.sensitive_lo >= cfg.sensitive_hi)
+        throw std::runtime_error("supervisor: invalid sensitive range");
+
+    cfg.allowed.resize(setup.n_allowed_sites);
     if (setup.n_allowed_sites > 0) {
         size_t sites_sz = setup.n_allowed_sites * sizeof(AllowedSite);
-        n = recv(sock, cfg.allowed.data(), sites_sz, MSG_WAITALL);
-        if ((size_t)n != sites_sz) {
-            fprintf(stderr, "supervisor: short read on AllowedSite[]\n");
-            return -1;
-        }
+        recv_all(sock, cfg.allowed.data(), sites_sz);
     }
 
     char dummy;
@@ -56,15 +74,16 @@ static int recv_setup(int sock, Config& cfg) {
     msg.msg_control    = cmsg_buf.buf;
     msg.msg_controllen = sizeof(cmsg_buf.buf);
 
-    n = recvmsg(sock, &msg, MSG_CMSG_CLOEXEC);
-    if (n < 0) { perror("supervisor: recvmsg"); return -1; }
+    ssize_t n = recvmsg(sock, &msg, MSG_CMSG_CLOEXEC);
+    if (n < 0) {
+        throw std::system_error(errno, std::system_category(), "recvmsg");
+    }
 
     struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg);
     if (!cmsg || cmsg->cmsg_level != SOL_SOCKET ||
         cmsg->cmsg_type != SCM_RIGHTS ||
         cmsg->cmsg_len != CMSG_LEN(sizeof(int))) {
-        fprintf(stderr, "supervisor: missing SCM_RIGHTS\n");
-        return -1;
+        throw std::runtime_error("supervisor: invalid SCM_RIGHTS");
     }
 
     int unotify_fd;
@@ -75,7 +94,10 @@ static int recv_setup(int sock, Config& cfg) {
 static bool overlaps(uintptr_t addr, uintptr_t size, uintptr_t lo, uintptr_t hi) {
     uintptr_t end = addr + size;
     bool wrapped = (end < addr);
-    return (wrapped || end > lo) && (addr < hi);
+    if (wrapped) {
+        return (addr < hi) || (end > lo);
+    }
+    return (end > lo) && (addr < hi);
 }
 
 static bool ip_is_allowed(uintptr_t ip, const Config& cfg) {
@@ -110,10 +132,7 @@ static bool handle_notification(int unotify_fd, const Config& cfg) {
     int       prot = (int)req.data.args[2];
 
     bool ip_ok     = ip_is_allowed(ip, cfg);
-    bool contained = (addr >= cfg.sensitive_lo)
-                  && (len <= cfg.sensitive_hi - cfg.sensitive_lo)
-                  && (addr + len <= cfg.sensitive_hi)
-                  && (addr + len >= addr);
+    bool contained = overlaps(addr, len, cfg.sensitive_lo, cfg.sensitive_hi);
     bool prot_safe = prot == PROT_NONE;
 
     if (!contained) {
@@ -124,12 +143,11 @@ static bool handle_notification(int unotify_fd, const Config& cfg) {
         // touches our memory, but either makes it PROT_NONE or is from a whitelisted instruction
         resp.error = 0;
         resp.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
-        fprintf(stdout, "Allowed mprotect from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d\n",ip, addr, addr + len, prot);
+        dbgprint("Allowed mprotect from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d\n",ip, addr, addr + len, prot);
     } else {
-        fprintf(stderr,
-            "supervisor: DENIED syscall %d from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d "
-            "(ip_ok=%d contained=%d)\n",
-             req.data.nr, ip, addr, addr + len, prot, ip_ok, contained);
+        dbgprint("supervisor: DENIED syscall %d from ip=0x%lx addr=[0x%lx,0x%lx) prot=%d "
+                 "(ip_ok=%d contained=%d)\n",
+                 req.data.nr, ip, addr, addr + len, prot, ip_ok, contained);
     }
 
     if (ioctl(unotify_fd, SECCOMP_IOCTL_NOTIF_SEND, &resp) < 0)
@@ -151,10 +169,10 @@ int supervisor_main(int sock_fd) {
 
     if (unotify_fd < 0) return 1;
 
-    fprintf(stderr, "supervisor: sensitive=[0x%lx, 0x%lx), %zu allowed sites\n",
+    dbgprint("supervisor: sensitive=[0x%lx, 0x%lx), %zu allowed sites\n",
             cfg.sensitive_lo, cfg.sensitive_hi, cfg.allowed.size());
     for (AllowedSite site : cfg.allowed)
-        fprintf(stderr, "supervisor: allowed site: 0x%lx\n", site);
+        dbgprint("supervisor: allowed site: 0x%lx\n", site);
 
     while (handle_notification(unotify_fd, cfg))
         ;

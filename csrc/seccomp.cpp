@@ -15,6 +15,19 @@ static inline void check_seccomp(int rc, const char* what) {
         throw std::system_error(-rc, std::generic_category(), what);
 }
 
+static void send_all(int sock, const void* buf, size_t len) {
+    const auto* p = static_cast<const char*>(buf);
+    while (len > 0) {
+        ssize_t n = send(sock, p, len, MSG_NOSIGNAL);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            throw std::system_error(errno, std::system_category(), "send");
+        }
+        p   += n;
+        len -= n;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Install a seccomp filter on the calling thread that sends all memory-range
 // syscalls to the supervisor via SCMP_ACT_NOTIFY.
@@ -65,21 +78,19 @@ static int install_memory_notify_filter() {
 // Send the unotify fd + range to the supervisor over the socketpair.
 // ---------------------------------------------------------------------------
 
-struct RangeMsg { uintptr_t lo, hi; };
-
 static void send_unotify_fd(int sock, int unotify_fd,
                             uintptr_t sensitive_lo, uintptr_t sensitive_hi) {
     uint32_t n = __stop___allowed_mprotect - __start___allowed_mprotect;
+    if (n > MAX_ALLOWED_SITES)
+        throw std::runtime_error("too many allowed sites");
 
     SupervisorSetupMsg hdr { sensitive_lo, sensitive_hi, n };
 
     // Send header + site array as regular data
-    if (send(sock, &hdr, sizeof(hdr), MSG_NOSIGNAL) != sizeof(hdr))
-        throw std::system_error(errno, std::system_category(), "send SupervisorSetupMsg");
+    send_all(sock, &hdr, sizeof(hdr));
 
     size_t sites_sz = n * sizeof(AllowedSite);
-    if (send(sock, __start___allowed_mprotect, sites_sz, MSG_NOSIGNAL) != (ssize_t)sites_sz)
-        throw std::system_error(errno, std::system_category(), "send AllowedSite[]");
+    send_all(sock, __start___allowed_mprotect, sites_sz);
 
     // Send unotify_fd via SCM_RIGHTS
     char dummy = 0;

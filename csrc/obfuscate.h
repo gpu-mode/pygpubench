@@ -8,6 +8,7 @@
 #include <memory_resource>
 #include <string>
 #include <random>
+#include <cstdint>
 
 
 class ObfuscatedHexDigest {

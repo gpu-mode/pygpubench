@@ -211,16 +211,6 @@ void setup_seccomp_filter(scmp_filter_ctx ctx) {
     check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(prctl), 1,
                      SCMP_A0(SCMP_CMP_EQ, PR_SET_PTRACER)),
                 "block prctl(SET_PTRACER)");
-    // TODO figure out what else we can and should block
-    /*
-    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(mprotect), 1,
-                      SCMP_A2(SCMP_CMP_MASKED_EQ, PROT_WRITE, PROT_WRITE)),
-                  "block mprotect+WRITE");
-
-    check_seccomp(seccomp_rule_add(ctx, SCMP_ACT_ERRNO(EPERM), SCMP_SYS(pkey_mprotect), 1,
-                      SCMP_A2(SCMP_CMP_MASKED_EQ, PROT_WRITE, PROT_WRITE)),
-                  "block pkey_mprotect+WRITE");
-    */
 }
 
 void install_seccomp_filter() {
