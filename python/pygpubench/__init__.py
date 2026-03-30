@@ -45,7 +45,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
     :param tb_conn: A connection to a multiprocessing pipe for sending tracebacks to the parent process.
     :param landlock: Whether to enable landlock. Enabled by default, prevents write access to the file system outside /tmp.
     :param mseal: Whether to enable memory sealing. Enabled by default, prevents making executable mappings writable.
-    :param allow_root: Whether to allow the benchmark to run as root. When run as root, the benchmark process's memory can be read through /proc/mem/self despite being protected.
+    :param allow_root: Whether to allow the benchmark to run as root (opt-in via ``allow_root=True``). When run as root, the benchmark process's memory can be read through /proc/self/mem despite being protected.
     """
     if stream is None:
         import torch

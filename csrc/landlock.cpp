@@ -214,7 +214,7 @@ void setup_seccomp_filter(scmp_filter_ctx ctx) {
 }
 
 /// Even with dumpable=0, if we are running as root we can open /proc/self/mem.
-/// This function tests accessing that file; only if we explciitly opt-in running as root
+/// This function tests accessing that file; only if we explicitly opt-in running as root
 /// does it allow keeping the file accessible (useful for testing)
 static void validate_proc_self_mem(bool allow_root) {
     int fd = open("/proc/self/mem", O_RDONLY);
@@ -222,8 +222,10 @@ static void validate_proc_self_mem(bool allow_root) {
         close(fd);
         if (!allow_root)
             throw std::runtime_error("/proc/self/mem is readable: Running as root?");
-        else
-            fprintf(stderr, "WARNING: /proc/self/mem is readable: Running as root?");
+        else {
+            fprintf(stderr, "WARNING: /proc/self/mem is readable: Running as root?\n");
+            fflush(stderr);
+        }
     } else if (errno == EACCES || errno == EPERM) {
         // good, can't access /proc/self/mem
     } else {
