@@ -32,7 +32,7 @@ __all__ = [
 def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "multiprocessing.connection.Connection", supervisor_sock: "socket.socket",
                    qualname: str, test_generator: TestGeneratorInterface,
                    test_args: dict, stream: int = None, discard: bool = True,
-                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True, mseal=True):
+                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True, mseal=True, allow_root=False):
     """
     Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
     :param out_fd: Writable file descriptor to which benchmark results are written.
@@ -45,6 +45,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
     :param tb_conn: A connection to a multiprocessing pipe for sending tracebacks to the parent process.
     :param landlock: Whether to enable landlock. Enabled by default, prevents write access to the file system outside /tmp.
     :param mseal: Whether to enable memory sealing. Enabled by default, prevents making executable mappings writable.
+    :param allow_root: Whether to allow the benchmark to run as root. When run as root, the benchmark process's memory can be read through /proc/mem/self despite being protected.
     """
     if stream is None:
         import torch
@@ -55,6 +56,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
             _pygpubench.do_bench(
                 out_fd.fileno(),
                 in_fd.fileno(),
+                supervisor_sock.fileno(),
                 qualname,
                 test_generator,
                 test_args,
@@ -63,7 +65,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
                 nvtx,
                 landlock,
                 mseal,
-                supervisor_sock.fileno(),
+                allow_root,
             )
     except BaseException:
         if tb_conn is not None:
@@ -154,6 +156,7 @@ def do_bench_isolated(
         timeout: int = 300,
         landlock = True,
         mseal = True,
+        allow_root = False,
 ) -> BenchmarkResult:
     """
     Runs kernel benchmark (`do_bench_impl`) in a subprocess for proper isolation.
@@ -200,6 +203,7 @@ def do_bench_isolated(
                 child_tb_conn,
                 landlock,
                 mseal,
+                allow_root,
             ),
         )
 

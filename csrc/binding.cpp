@@ -16,12 +16,12 @@ int supervisor_main(int sock_fd);
 namespace nb = nanobind;
 
 
-void do_bench(int result_fd, int input_fd, const std::string& kernel_qualname, const nb::object& test_generator,
+void do_bench(int result_fd, int input_fd, int supervisor_sock_fd, const std::string& kernel_qualname, const nb::object& test_generator,
               const nb::dict& test_kwargs, std::uintptr_t stream, bool discard, bool nvtx, bool landlock, bool mseal,
-              int supervisor_sock_fd) {
+              bool allow_root) {
     std::vector<char> signature_bytes(32);
     auto config = read_benchmark_parameters(input_fd, signature_bytes.data());
-    auto mgr = make_benchmark_manager(result_fd, signature_bytes, config.Seed, discard, nvtx, landlock, mseal, supervisor_sock_fd);
+    auto mgr = make_benchmark_manager(result_fd, signature_bytes, config.Seed, discard, nvtx, landlock, mseal, allow_root, supervisor_sock_fd);
     cleanse(signature_bytes.data(), 32);
 
     {
@@ -54,6 +54,7 @@ NB_MODULE(_pygpubench, m) {
     m.def("do_bench", do_bench,
           nb::arg("result_fd"),
           nb::arg("input_fd"),
+          nb::arg("supervisor_sock_fd"),
           nb::arg("kernel_qualname"),
           nb::arg("test_generator"),
           nb::arg("test_kwargs"),
@@ -62,7 +63,7 @@ NB_MODULE(_pygpubench, m) {
           nb::arg("nvtx")               = false,
           nb::arg("landlock")           = true,
           nb::arg("mseal")              = true,
-          nb::arg("supervisor_sock_fd") = -1   // -1 = seccomp disabled
+          nb::arg("allow_root")         = false
     );
 
     m.def("run_supervisor", [](int sock_fd) {
