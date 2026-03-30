@@ -31,7 +31,7 @@ extern void install_landlock();
 extern bool mseal_supported();
 extern void seal_mappings();
 extern bool supports_seccomp_notify();
-extern void install_seccomp_filter();
+extern void install_seccomp_filter(bool allow_root);
 extern void seccomp_install_memory_notify(int supervisor_sock, uintptr_t lo, uintptr_t hi);
 
 static void check_check_approx_match_dispatch(unsigned* result, void* expected_data, nb::dlpack::dtype expected_type,
@@ -139,7 +139,7 @@ void BenchmarkManagerDeleter::operator()(BenchmarkManager* p) const noexcept {
 
 BenchmarkManagerPtr make_benchmark_manager(
     int result_fd, const std::vector<char>& signature, std::uint64_t seed,
-    bool discard, bool nvtx, bool landlock, bool mseal, int supervisor_socket)
+    bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket)
 {
     const std::size_t page_size = static_cast<std::size_t>(getpagesize());
     const std::size_t alloc_size = (BenchmarkManagerArenaSize + page_size - 1) & ~(page_size - 1);
@@ -155,7 +155,7 @@ BenchmarkManagerPtr make_benchmark_manager(
         raw = new (mem) BenchmarkManager(
             static_cast<std::byte*>(mem), alloc_size,
             result_fd, signature, seed,
-            discard, nvtx, landlock, mseal, supervisor_socket);
+            discard, nvtx, landlock, mseal, allow_root, supervisor_socket);
     } catch (...) {
         // If construction throws, release the mmap'd region before propagating.
         if (munmap(mem, alloc_size) != 0) {
@@ -170,7 +170,7 @@ BenchmarkManagerPtr make_benchmark_manager(
 
 BenchmarkManager::BenchmarkManager(std::byte* arena, std::size_t arena_size,
                                    int result_fd, const std::vector<char>& signature, std::uint64_t seed, bool discard,
-                                   bool nvtx, bool landlock, bool mseal, int supervisor_socket)
+                                   bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket)
     : mArena(arena),
       mResource(arena + sizeof(BenchmarkManager),
           arena_size - sizeof(BenchmarkManager),
@@ -203,6 +203,7 @@ BenchmarkManager::BenchmarkManager(std::byte* arena, std::size_t arena_size,
     mNVTXEnabled = nvtx;
     mLandlock = landlock;
     mSeal = mseal;
+    mAllowRoot = allow_root;
     mDiscardCache = discard;
     mSeed = seed;
     std::random_device rd;
@@ -343,7 +344,7 @@ void BenchmarkManager::install_protections() {
         seal_mappings();
     }
 
-    install_seccomp_filter();
+    install_seccomp_filter(mAllowRoot);
 }
 
 static void setup_seccomp(int sock, bool install_notify, std::uintptr_t lo, std::uintptr_t hi) {

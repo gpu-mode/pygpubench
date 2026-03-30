@@ -213,7 +213,25 @@ void setup_seccomp_filter(scmp_filter_ctx ctx) {
                 "block prctl(SET_PTRACER)");
 }
 
-void install_seccomp_filter() {
+/// Even with dumpable=0, if we are running as root we can open /proc/self/mem.
+/// This function tests accessing that file; only if we explciitly opt-in running as root
+/// does it allow keeping the file accessible (useful for testing)
+static void validate_proc_self_mem(bool allow_root) {
+    int fd = open("/proc/self/mem", O_RDONLY);
+    if (fd >= 0) {
+        close(fd);
+        if (!allow_root)
+            throw std::runtime_error("/proc/self/mem is readable: Running as root?");
+        else
+            fprintf(stderr, "WARNING: /proc/self/mem is readable: Running as root?");
+    } else if (errno == EACCES || errno == EPERM) {
+        // good, can't access /proc/self/mem
+    } else {
+        throw std::system_error(errno, std::system_category(), "open(/proc/self/mem)");
+    }
+}
+
+void install_seccomp_filter(bool allow_root) {
     scmp_filter_ctx ctx = seccomp_init(SCMP_ACT_ALLOW);
     if (!ctx) throw std::runtime_error("seccomp_init failed");
     try {
@@ -227,6 +245,9 @@ void install_seccomp_filter() {
     if (prctl(PR_SET_DUMPABLE, 0) < 0) {
         throw std::system_error(errno, std::system_category(), "prctl(PR_SET_DUMPABLE)");
     }
+
+    // check that /proc/self/mem is protected
+    validate_proc_self_mem(allow_root);
 
     // Prevent gaining privileges (if attacker tries setuid exploits)
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {

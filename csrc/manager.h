@@ -43,7 +43,7 @@ using BenchmarkManagerPtr = std::unique_ptr<BenchmarkManager, BenchmarkManagerDe
 
 BenchmarkManagerPtr make_benchmark_manager(
     int result_fd, const std::vector<char>& signature, std::uint64_t seed,
-    bool discard, bool nvtx, bool landlock, bool mseal, int supervisor_socket);
+    bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket);
 
 
 class BenchmarkManager {
@@ -53,14 +53,14 @@ public:
     void send_report();
     void clean_up();
 private:
-    friend BenchmarkManagerPtr make_benchmark_manager(int result_fd, const std::vector<char>& signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal, int supervisor_socket);
+    friend BenchmarkManagerPtr make_benchmark_manager(int result_fd, const std::vector<char>& signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket);
     friend BenchmarkManagerDeleter;
     /// `arena` is the mmap region that owns all memory for this object and its vectors.
     /// The BenchmarkManager must have been placement-newed into the front of that region;
     /// the rest is used as a monotonic PMR arena for internal vectors.
     BenchmarkManager(std::byte* arena, std::size_t arena_size,
                      int result_fd, const std::vector<char>& signature, std::uint64_t seed,
-                     bool discard, bool nvtx, bool landlock, bool mseal, int supervisor_socket);
+                     bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket);
     ~BenchmarkManager();
 
     struct Expected {
@@ -110,6 +110,7 @@ private:
     bool mDiscardCache = true;
     bool mLandlock = true;
     bool mSeal = true;
+    bool mAllowRoot = false;
     int mSupervisorSock = -1;
     std::uint64_t mSeed = -1;
     std::pmr::vector<Expected> mExpectedOutputs;
