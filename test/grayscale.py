@@ -40,11 +40,11 @@ if __name__ == "__main__":
     kernels = ["valid_custom_kernel_eager", "valid_custom_kernel_compiled", "valid_custom_kernel_stream"]
     for kernel in kernels:
         print(kernel)
-        res = pygpubench.do_bench_isolated(f"submission.{kernel}", generate_test_case,  {"size": 1024}, 100, 5, discard=True, landlock=False, mseal=False)
+        res = pygpubench.do_bench_isolated(f"submission.{kernel}", generate_test_case,  {"size": 1024}, 100, 5, discard=True, landlock=False, mseal=False, allow_root=True)
         print("❌" if not res.success else "✅", pygpubench.basic_stats(res.time_us))
     broken = ["wrong_custom_kernel_backward_race", "wrong_custom_kernel_forward_race"]
     for kernel in broken:
         print(kernel)
-        res = pygpubench.do_bench_isolated(f"submission.{kernel}", generate_test_case,  {"size": 1024}, 100, 5, discard=True, landlock=False, mseal=False)
+        res = pygpubench.do_bench_isolated(f"submission.{kernel}", generate_test_case,  {"size": 1024}, 100, 5, discard=True, landlock=False, mseal=False, allow_root=True)
         print("❌" if not res.success else "✅",pygpubench.basic_stats(res.time_us))
     print("done")
