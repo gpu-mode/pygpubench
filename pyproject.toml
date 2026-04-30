@@ -1,6 +1,6 @@
 [project]
 name = "pygpubench"
-version = "0.0.2"
+version = "0.0.3"
 description = "GPU kernel benchmarking utilities"
 readme = "README.md"
 requires-python = ">=3.12"
