@@ -21,6 +21,8 @@
 #define dbgprint(...)
 #endif
 
+extern bool supports_seccomp_notify();
+
 struct Config {
     uintptr_t sensitive_lo;
     uintptr_t sensitive_hi;
@@ -161,7 +163,14 @@ int supervisor_main(int sock_fd) {
     if (prctl(PR_SET_DUMPABLE, 0) < 0)
         throw std::system_error(errno, std::system_category(), "prctl(PR_SET_DUMPABLE)");
 
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    if (prctl(PR_SET_PDEATHSIG, SIGTERM) < 0)
+        fprintf(stderr, "supervisor: PR_SET_PDEATHSIG failed: %s\n", strerror(errno));
+
+    if (!supports_seccomp_notify()) {
+        close(sock_fd);
+        return 0;  // expected, silent
+    }
+
 
     Config cfg;
     int unotify_fd = recv_setup(sock_fd, cfg);
