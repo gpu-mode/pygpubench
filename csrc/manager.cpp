@@ -387,7 +387,7 @@ nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const
 
     // snapshot all member state needed in the thread before protecting the arena
     const int sock = mSupervisorSock;
-    const bool install_notify = mSeal || supports_seccomp_notify();
+    const bool install_notify = supports_seccomp_notify();
     const double warmup_seconds = mWarmupSeconds;
     void* const cc_memory = mDeviceDummyMemory;
     const std::size_t l2_clear_size = mL2CacheSize;
