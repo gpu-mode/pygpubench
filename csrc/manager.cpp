@@ -397,19 +397,25 @@ nb::callable BenchmarkManager::initial_kernel_setup(double& time_estimate, const
     PROTECT_RANGE(lo, hi-lo, PROT_NONE);
     setup_seccomp(sock, install_notify, lo, hi);
 
-    nb::callable kernel = kernel_from_qualname(qualname);
-    CUDA_CHECK(cudaDeviceSynchronize());
-    kernel(*call_args);  // trigger JIT compile
+    try {
+        nb::callable kernel = kernel_from_qualname(qualname);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        kernel(*call_args);  // trigger JIT compile
 
-    time_estimate = run_warmup_loop(kernel, call_args, stream,
-                                    cc_memory, l2_clear_size, discard_cache,
-                                    warmup_seconds);
+        time_estimate = run_warmup_loop(kernel, call_args, stream,
+                                        cc_memory, l2_clear_size, discard_cache,
+                                        warmup_seconds);
 
-    PROTECT_RANGE(lo, hi - lo, PROT_READ | PROT_WRITE);
-    mSupervisorSock = -1;
-    nvtx_pop();
+        PROTECT_RANGE(lo, hi - lo, PROT_READ | PROT_WRITE);
+        mSupervisorSock = -1;
+        nvtx_pop();
 
-    return kernel;
+        return kernel;
+    } catch (...) {
+        PROTECT_RANGE(lo, hi - lo, PROT_READ | PROT_WRITE);
+        nvtx_pop();
+        throw;
+    }
 }
 
 void BenchmarkManager::randomize_before_test(int num_calls, std::mt19937& rng, cudaStream_t stream) {
