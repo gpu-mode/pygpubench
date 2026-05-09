@@ -19,7 +19,7 @@ FetchContent_Declare(
         nanobind
         QUIET
         GIT_REPOSITORY https://github.com/wjakob/nanobind.git
-        GIT_TAG v2.9.2
+        GIT_TAG v2.12.0
 )
 
 find_package(CUDAToolkit REQUIRED)
