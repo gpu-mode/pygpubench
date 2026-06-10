@@ -121,7 +121,7 @@ def generate_test_case(*, seed):
     x = torch.rand(_M, device="cuda", dtype=torch.float32, generator=gen).contiguous()
     w = _get_state()["w"]
     y = torch.empty(w.shape[0], device="cuda", dtype=torch.float32).contiguous()
-    expected = _gemm_vec(w, x)
+    expected = torch.sum(w * x, dim=1).contiguous()
     return (y, x), (expected, 1e-2, 1e-2)
 
 
