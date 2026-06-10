@@ -11,7 +11,7 @@ evict the parked lines -- unless the harness first releases the carveout and dem
 persisting lines (see ``csrc/clear_l2.cu``). On Hopper/Blackwell the default persisting
 carveout is already nonzero, so a submission only needs the access-policy window.
 
-The test runs the SAME memory-bound single-column GEMM through the isolated benchmark twice:
+The test runs the SAME memory-bound row-wise dot product through the isolated benchmark twice:
   * ``kernel``            -- honest (each iteration reads the weights from a cleared L2).
   * ``kernel_l2_persist`` -- marks the reused weights persisting so they would survive the
                              clear and stay warm across iterations.
@@ -95,16 +95,16 @@ def _install_persistence():
                                   ctypes.byref(val))
 
 
-def _gemm_vec(w, x, out=None):
-    x_col = x[:, None]
+def _rowwise_dot(w, x, out=None):
+    result = torch.sum(w * x, dim=1)
     if out is None:
-        return torch.mm(w, x_col).squeeze(1).contiguous()
-    torch.mm(w, x_col, out=out[:, None])
+        return result.contiguous()
+    out.copy_(result)
     return out
 
 
 def kernel(output, x):
-    _gemm_vec(_get_state()["w"], x, out=output)
+    _rowwise_dot(_get_state()["w"], x, out=output)
 
 
 def kernel_l2_persist(output, x):
@@ -112,7 +112,7 @@ def kernel_l2_persist(output, x):
     if not _installed:
         _install_persistence()
         _installed = True
-    _gemm_vec(_get_state()["w"], x, out=output)
+    _rowwise_dot(_get_state()["w"], x, out=output)
 
 
 def generate_test_case(*, seed):
@@ -121,7 +121,7 @@ def generate_test_case(*, seed):
     x = torch.rand(_M, device="cuda", dtype=torch.float32, generator=gen).contiguous()
     w = _get_state()["w"]
     y = torch.empty(w.shape[0], device="cuda", dtype=torch.float32).contiguous()
-    expected = torch.sum(w * x, dim=1).contiguous()
+    expected = _rowwise_dot(w, x)
     return (y, x), (expected, 1e-2, 1e-2)
 
 
