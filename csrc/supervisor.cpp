@@ -114,7 +114,12 @@ static bool handle_notification(int unotify_fd, const Config& cfg) {
 
     if (ioctl(unotify_fd, SECCOMP_IOCTL_NOTIF_RECV, &req) < 0) {
         if (errno == EINTR)  return true;
-        if (errno == ENODEV) return false;
+        // ENODEV: all filter users gone. ENOENT: the notifying task died
+        // before we could RECV its notification (the same "target died"
+        // condition the NOTIF_SEND path below treats as benign). Both mean
+        // no live syscall is left to police -- the tracee has exited -- so
+        // stop the loop quietly instead of perror'ing teardown noise.
+        if (errno == ENODEV || errno == ENOENT) return false;
         perror("supervisor: SECCOMP_IOCTL_NOTIF_RECV");
         return false;
     }

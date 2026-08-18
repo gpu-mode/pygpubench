@@ -18,6 +18,8 @@
 #include <linux/landlock.h>
 #include <seccomp.h>
 #include <system_error>
+#include <string>
+#include <vector>
 #include <unordered_set>
 #include <utility>
 #include <sstream>
@@ -83,7 +85,7 @@ static void allow_path(LandlockFd& ruleset, const char *path, uint64_t access) {
     landlock_add_rule(ruleset, LANDLOCK_RULE_PATH_BENEATH, &attr, 0);
 }
 
-void install_landlock() {
+void install_landlock(const std::vector<std::string>& writable_paths) {
     const std::uint64_t RO = LANDLOCK_ACCESS_FS_READ_FILE |
                      LANDLOCK_ACCESS_FS_READ_DIR;
 
@@ -111,9 +113,12 @@ void install_landlock() {
     // Read-only: entire filesystem
     allow_path(ruleset_fd, "/", RO);
 
-    // Read-write: /tmp and /dev only
-    allow_path(ruleset_fd, "/tmp", RW);
-    allow_path(ruleset_fd, "/dev", RW); // needed for /dev/null etc, used e.g., by triton
+    // Read-write: /dev is always needed for /dev/null etc, used e.g., by triton.
+    allow_path(ruleset_fd, "/dev", RW);
+    // Additional writable paths are caller-configurable (defaults to /tmp).
+    for (const std::string& path : writable_paths) {
+        allow_path(ruleset_fd, path.c_str(), RW);
+    }
 
     // required for landlock
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) < 0) {

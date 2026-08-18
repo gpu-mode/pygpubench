@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <fstream>
 #include <memory_resource>
+#include <string>
 #include <vector>
 #include <cuda_runtime.h>
 #include <memory>
@@ -22,6 +23,9 @@
 namespace nb = nanobind;
 
 using nb_cuda_array = nb::ndarray<nb::c_contig, nb::device::cuda>;
+/// Broader type that accepts any CUDA ndarray (including noncontiguous),
+/// used only for detection before forcing contiguity.
+using nb_any_cuda_array = nb::ndarray<nb::device::cuda>;
 
 struct BenchmarkParameters {
     std::uint64_t Seed;
@@ -43,7 +47,8 @@ using BenchmarkManagerPtr = std::unique_ptr<BenchmarkManager, BenchmarkManagerDe
 
 BenchmarkManagerPtr make_benchmark_manager(
     int result_fd, const std::vector<char>& signature, std::uint64_t seed,
-    bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket);
+    bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket,
+    const std::vector<std::string>& writable_paths);
 
 
 class BenchmarkManager {
@@ -53,14 +58,15 @@ public:
     void send_report();
     void clean_up();
 private:
-    friend BenchmarkManagerPtr make_benchmark_manager(int result_fd, const std::vector<char>& signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket);
+    friend BenchmarkManagerPtr make_benchmark_manager(int result_fd, const std::vector<char>& signature, std::uint64_t seed, bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket, const std::vector<std::string>& writable_paths);
     friend BenchmarkManagerDeleter;
     /// `arena` is the mmap region that owns all memory for this object and its vectors.
     /// The BenchmarkManager must have been placement-newed into the front of that region;
     /// the rest is used as a monotonic PMR arena for internal vectors.
     BenchmarkManager(std::byte* arena, std::size_t arena_size,
                      int result_fd, const std::vector<char>& signature, std::uint64_t seed,
-                     bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket);
+                     bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket,
+                     const std::vector<std::string>& writable_paths);
     ~BenchmarkManager();
 
     struct Expected {
@@ -109,6 +115,7 @@ private:
     bool mNVTXEnabled = false;
     bool mDiscardCache = true;
     bool mLandlock = true;
+    std::vector<std::string> mWritablePaths;
     bool mSeal = true;
     bool mAllowRoot = false;
     int mSupervisorSock = -1;

@@ -29,16 +29,36 @@ __all__ = [
 ]
 
 
+def _as_contiguous(value):
+    """Return a C-contiguous version of ``value``, passing non-tensors through unchanged.
+
+    The benchmark runner shadows and byte-compares every device argument, which only works
+    for densely packed buffers, so strided views coming out of a test generator have to be
+    materialized before they reach the C++ side.
+    """
+    contiguous = getattr(value, "contiguous", None)
+    return contiguous() if callable(contiguous) else value
+
+
+def _contiguous_test_generator(test_generator: TestGeneratorInterface) -> TestGeneratorInterface:
+    """Wrap a test generator so the tensors it produces are contiguous."""
+    def wrapper(**kwargs):
+        args, expected = test_generator(**kwargs)
+        return tuple(_as_contiguous(a) for a in args), tuple(_as_contiguous(e) for e in expected)
+    return wrapper
+
+
 def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "multiprocessing.connection.Connection", supervisor_sock: "socket.socket",
                    qualname: str, test_generator: TestGeneratorInterface,
                    test_args: dict, stream: int = None, discard: bool = True,
-                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True, mseal=True, allow_root=False):
+                   nvtx: bool = False, tb_conn: "multiprocessing.connection.Connection" = None, landlock=True, mseal=True, allow_root=False,
+                   writable_paths=("/tmp",)):
     """
     Benchmarks the kernel referred to by `qualname` against the test case returned by `test_generator`.
     :param out_fd: Writable file descriptor to which benchmark results are written.
     :param in_fd: Readable file descriptor that communicates benchmark configuration to the runner.
     :param qualname: Fully qualified name of the kernel object, e.g. ``my_package.my_module.kernel``.
-    :param test_generator: A function that takes the test arguments (including a seed) and returns a test case; i.e., a tuple of (input, expected)
+    :param test_generator: A function that takes the test arguments (including a seed) and returns a test case; i.e., a tuple of (input, expected). Tensors it returns are made contiguous before they are handed to the benchmark runner.
     :param test_args: keyword arguments to be passed to `test_generator`. Seed will be generated automatically.
     :param discard: If true, then cache lines are discarded as part of cache clearing before each benchmark run.
     :param nvtx: Whether to enable NVTX markers for the benchmark. Mostly useful for debugging.
@@ -46,6 +66,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
     :param landlock: Whether to enable landlock. Enabled by default, prevents write access to the file system outside /tmp.
     :param mseal: Whether to enable memory sealing. Enabled by default, prevents making executable mappings writable.
     :param allow_root: Whether to allow the benchmark to run as root (opt-in via ``allow_root=True``). When run as root, the benchmark process's memory can be read through /proc/self/mem despite being protected.
+    :param writable_paths: Filesystem paths (and everything beneath them) the benchmark is allowed to write to when landlock is enabled. Defaults to ``("/tmp",)``. ``/dev`` is always writable (needed by e.g. triton); the rest of the filesystem stays read-only.
     """
     if stream is None:
         import torch
@@ -58,7 +79,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
                 in_fd.fileno(),
                 supervisor_sock.fileno(),
                 qualname,
-                test_generator,
+                _contiguous_test_generator(test_generator),
                 test_args,
                 stream,
                 discard,
@@ -66,6 +87,7 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
                 landlock,
                 mseal,
                 allow_root,
+                list(writable_paths),
             )
     except BaseException:
         if tb_conn is not None:
@@ -157,6 +179,7 @@ def do_bench_isolated(
         landlock = True,
         mseal = True,
         allow_root = False,
+        writable_paths = ("/tmp",),
 ) -> BenchmarkResult:
     """
     Runs kernel benchmark (`do_bench_impl`) in a subprocess for proper isolation.
@@ -204,6 +227,7 @@ def do_bench_isolated(
                 landlock,
                 mseal,
                 allow_root,
+                writable_paths,
             ),
         )
 

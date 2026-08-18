@@ -5,8 +5,10 @@
 #include "manager.h"
 #include "utils.h"
 #include "check.h"
+#include <algorithm>
 #include <chrono>
 #include <cuda_runtime.h>
+#include <numeric>
 #include <optional>
 #include <system_error>
 #include <cstdlib>
@@ -27,7 +29,7 @@ static constexpr std::size_t ArenaSize = 2 * 1024 * 1024;
 static constexpr std::size_t BenchmarkManagerArenaSize = 128 * 1024 * 1024;
 
 extern void clear_cache(void* dummy_memory, int size, bool discard, cudaStream_t stream);
-extern void install_landlock();
+extern void install_landlock(const std::vector<std::string>& writable_paths);
 extern bool mseal_supported();
 extern void seal_mappings();
 extern bool supports_seccomp_notify();
@@ -139,7 +141,8 @@ void BenchmarkManagerDeleter::operator()(BenchmarkManager* p) const noexcept {
 
 BenchmarkManagerPtr make_benchmark_manager(
     int result_fd, const std::vector<char>& signature, std::uint64_t seed,
-    bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket)
+    bool discard, bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket,
+    const std::vector<std::string>& writable_paths)
 {
     const std::size_t page_size = static_cast<std::size_t>(getpagesize());
     const std::size_t alloc_size = (BenchmarkManagerArenaSize + page_size - 1) & ~(page_size - 1);
@@ -155,7 +158,7 @@ BenchmarkManagerPtr make_benchmark_manager(
         raw = new (mem) BenchmarkManager(
             static_cast<std::byte*>(mem), alloc_size,
             result_fd, signature, seed,
-            discard, nvtx, landlock, mseal, allow_root, supervisor_socket);
+            discard, nvtx, landlock, mseal, allow_root, supervisor_socket, writable_paths);
     } catch (...) {
         // If construction throws, release the mmap'd region before propagating.
         if (munmap(mem, alloc_size) != 0) {
@@ -170,7 +173,8 @@ BenchmarkManagerPtr make_benchmark_manager(
 
 BenchmarkManager::BenchmarkManager(std::byte* arena, std::size_t arena_size,
                                    int result_fd, const std::vector<char>& signature, std::uint64_t seed, bool discard,
-                                   bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket)
+                                   bool nvtx, bool landlock, bool mseal, bool allow_root, int supervisor_socket,
+                                   const std::vector<std::string>& writable_paths)
     : mArena(arena),
       mResource(arena + sizeof(BenchmarkManager),
           arena_size - sizeof(BenchmarkManager),
@@ -202,6 +206,7 @@ BenchmarkManager::BenchmarkManager(std::byte* arena, std::size_t arena_size,
 
     mNVTXEnabled = nvtx;
     mLandlock = landlock;
+    mWritablePaths = writable_paths;
     mSeal = mseal;
     mAllowRoot = allow_root;
     mDiscardCache = discard;
@@ -262,6 +267,14 @@ auto BenchmarkManager::make_shadow_args(const nb::tuple& args, cudaStream_t stre
     std::mt19937 gen(rd());
     std::uniform_int_distribution<unsigned> canary_seed_dist(0, 0xffffffff);
     for (int i = 1; i < nargs; i++) {
+        // A strided device array cannot be shadowed or canary-checked byte-wise. Silently
+        // skipping it would leave that argument unprotected, so refuse it instead; making
+        // test case tensors contiguous is done on the python side.
+        if (nb::isinstance<nb_any_cuda_array>(args[i]) && !can_convert_to_tensor(args[i])) {
+            throw std::runtime_error("kernel argument " + std::to_string(i) +
+                                     " is a non-contiguous CUDA array; test generators must produce contiguous tensors");
+        }
+
         if (can_convert_to_tensor(args[i])) {
             nb_cuda_array arr = nb::cast<nb_cuda_array>(args[i]);
             void* shadow;
@@ -332,7 +345,7 @@ void BenchmarkManager::install_protections() {
 
     // restrict access to file system
     if (mLandlock)
-        install_landlock();
+        install_landlock(mWritablePaths);
 
     if (mSeal) {
         if (!mseal_supported()) {
