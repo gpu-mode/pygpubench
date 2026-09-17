@@ -53,10 +53,18 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
 
     try:
         with DeterministicContext():
-            _pygpubench.do_bench(
-                out_fd.fileno(),
-                in_fd.fileno(),
-                supervisor_sock.fileno(),
+            # The runner only needs descriptors. Duplicate them so no python
+            # object owns what the runner uses, then close the originals.
+            result_fd = os.dup(out_fd.fileno())
+            input_fd = os.dup(in_fd.fileno())
+            supervisor_fd = os.dup(supervisor_sock.fileno())
+            out_fd.close()
+            in_fd.close()
+            supervisor_sock.close()
+            benchmark_call = [(
+                result_fd,
+                input_fd,
+                supervisor_fd,
                 qualname,
                 test_generator,
                 test_args,
@@ -66,7 +74,18 @@ def _do_bench_impl(out_fd: "multiprocessing.connection.Connection", in_fd: "mult
                 landlock,
                 mseal,
                 allow_root,
-            )
+            )]
+            # The kernel is imported on a worker thread while this frame is live,
+            # so anything bound here, or in the Process object one frame down, is
+            # readable through sys._current_frames. Clear both, and pop the call
+            # so this frame holds no reference to it while the kernel runs. See issue #3.
+            current = mp.current_process()
+            if getattr(current, "_args", None):
+                current._args = ()
+                current._kwargs = {}
+            del out_fd, in_fd, supervisor_sock, test_generator, test_args
+            del result_fd, input_fd, supervisor_fd, current
+            _pygpubench.do_bench(*benchmark_call.pop())
     except BaseException:
         if tb_conn is not None:
             tb_conn.send(traceback.format_exc())
